@@ -1,3 +1,5 @@
+extern crate futures;
+extern crate indicatif;
 /// This is a tiny project to be a quick alternative to symchk for generating
 /// manifests. This mimics symchk of the form `symchk /om manifest /r <path>`
 /// but only looks for MZ/PE files.
@@ -8,22 +10,20 @@
 /// The output manifest is compatible with symchk and thus symchk is currently
 /// used for the actual download. To download symbols after this manifest
 /// has been generated use `symchk /im manifest /s <symbol path>`
-
 extern crate rand;
 extern crate tokio;
-extern crate futures;
-extern crate indicatif;
 
 use io::Write;
 use rand::{thread_rng, Rng};
+// use rand::{thread_rng, Rng};
 
-use std::io::{self, Read, Seek};
 use std::env;
-use std::time::Instant;
-use std::thread;
-use std::process::Command;
-use std::io::{SeekFrom};
+use std::io::SeekFrom;
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::thread;
+use std::time::Instant;
 
 use futures::{stream, Stream, StreamExt};
 use indicatif::ProgressBar;
@@ -32,8 +32,9 @@ use tokio::{
     io::AsyncWriteExt,
 };
 
-const USAGE: &'static str =
-"Usage:
+mod sym;
+
+const USAGE: &'static str = "Usage:
 
     pdblister [manifest | download | filestore | clean] <filepath>
  
@@ -84,7 +85,9 @@ const STATUS_MESSAGES: bool = true;
 
 /// Given a `path`, return a stream of all the files recursively found from
 /// that path.
-fn recursive_listdir(path: impl Into<PathBuf>) -> impl Stream<Item = io::Result<DirEntry>> + Send + 'static {
+fn recursive_listdir(
+    path: impl Into<PathBuf>,
+) -> impl Stream<Item = io::Result<DirEntry>> + Send + 'static {
     async fn one_level(path: PathBuf, to_visit: &mut Vec<PathBuf>) -> io::Result<Vec<DirEntry>> {
         let mut dir = fs::read_dir(path).await?;
         let mut files = Vec::new();
@@ -100,16 +103,14 @@ fn recursive_listdir(path: impl Into<PathBuf>) -> impl Stream<Item = io::Result<
         Ok(files)
     }
 
-    stream::unfold(vec![path.into()], |mut to_visit| {
-        async {
-            let path = to_visit.pop()?;
-            let file_stream = match one_level(path, &mut to_visit).await {
-                Ok(files) => stream::iter(files).map(Ok).left_stream(),
-                Err(e) => stream::once(async { Err(e) }).right_stream(),
-            };
+    stream::unfold(vec![path.into()], |mut to_visit| async {
+        let path = to_visit.pop()?;
+        let file_stream = match one_level(path, &mut to_visit).await {
+            Ok(files) => stream::iter(files).map(Ok).left_stream(),
+            Err(e) => stream::once(async { Err(e) }).right_stream(),
+        };
 
-            Some((file_stream, to_visit))
-        }
+        Some((file_stream, to_visit))
     })
     .flatten()
 }
@@ -117,153 +118,153 @@ fn recursive_listdir(path: impl Into<PathBuf>) -> impl Stream<Item = io::Result<
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct MZHeader {
-    signature:       [u8; 2],
+    signature: [u8; 2],
     last_page_bytes: u16,
-    num_pages:       u16,
+    num_pages: u16,
     num_relocations: u16,
-    header_size:     u16,
-    min_memory:      u16,
-    max_memory:      u16,
-    initial_ss:      u16,
-    initial_sp:      u16,
-    checksum:        u16,
-    entry:           u32,
-    ptr_relocation:  u16,
-    overlay:         u16,
-    reserved:        [u8; 32],
-    new_header:      u32,
+    header_size: u16,
+    min_memory: u16,
+    max_memory: u16,
+    initial_ss: u16,
+    initial_sp: u16,
+    checksum: u16,
+    entry: u32,
+    ptr_relocation: u16,
+    overlay: u16,
+    reserved: [u8; 32],
+    new_header: u32,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct PEHeader {
-    signature:            [u8; 4],
-    machine:              u16,
-    num_sections:         u16,
-    timestamp:            u32,
-    ptr_symtable:         u32,
-    num_smtable:          u32,
+    signature: [u8; 4],
+    machine: u16,
+    num_sections: u16,
+    timestamp: u32,
+    ptr_symtable: u32,
+    num_smtable: u32,
     optional_header_size: u16,
-    characteristics:      u16,
+    characteristics: u16,
 }
 
-const IMAGE_FILE_MACHINE_I386:  u16 = 0x014c;
-const IMAGE_FILE_MACHINE_IA64:  u16 = 0x0200;
+const IMAGE_FILE_MACHINE_I386: u16 = 0x014c;
+const IMAGE_FILE_MACHINE_IA64: u16 = 0x0200;
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct WindowsPEHeader32 {
-    magic:                      u16,
-    linker_major_version:       u8,
-    linker_minor_version:       u8,
-    size_of_code:               u32,
-    size_of_initialized_data:   u32,
+    magic: u16,
+    linker_major_version: u8,
+    linker_minor_version: u8,
+    size_of_code: u32,
+    size_of_initialized_data: u32,
     size_of_uninitialized_data: u32,
-    entry:                      u32,
-    code_base:                  u32,
-    data_base:                  u32,
-    image_base:                 u32,
-    section_align:              u32,
-    file_align:                 u32,
-    major_os_version:           u16,
-    minor_os_version:           u16,
-    major_image_version:        u16,
-    minor_image_version:        u16,
-    major_subsystem_version:    u16,
-    minor_subsystem_version:    u16,
-    win32_version:              u32,
-    size_of_image:              u32,
-    size_of_headers:            u32,
-    checksum:                   u32,
-    subsystem:                  u16,
-    dll_characteristics:        u16,
-    size_of_stack_reserve:      u32,
-    size_of_stack_commit:       u32,
-    size_of_heap_reserve:       u32,
-    size_of_heap_commit:        u32,
-    loader_flags:               u32,
-    num_tables:                 u32,
+    entry: u32,
+    code_base: u32,
+    data_base: u32,
+    image_base: u32,
+    section_align: u32,
+    file_align: u32,
+    major_os_version: u16,
+    minor_os_version: u16,
+    major_image_version: u16,
+    minor_image_version: u16,
+    major_subsystem_version: u16,
+    minor_subsystem_version: u16,
+    win32_version: u32,
+    size_of_image: u32,
+    size_of_headers: u32,
+    checksum: u32,
+    subsystem: u16,
+    dll_characteristics: u16,
+    size_of_stack_reserve: u32,
+    size_of_stack_commit: u32,
+    size_of_heap_reserve: u32,
+    size_of_heap_commit: u32,
+    loader_flags: u32,
+    num_tables: u32,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct WindowsPEHeader64 {
-    magic:                      u16,
-    linker_major_version:       u8,
-    linker_minor_version:       u8,
-    size_of_code:               u32,
-    size_of_initialized_data:   u32,
+    magic: u16,
+    linker_major_version: u8,
+    linker_minor_version: u8,
+    size_of_code: u32,
+    size_of_initialized_data: u32,
     size_of_uninitialized_data: u32,
-    entry:                      u32,
-    code_base:                  u32,
-    image_base:                 u64,
-    section_align:              u32,
-    file_align:                 u32,
-    major_os_version:           u16,
-    minor_os_version:           u16,
-    major_image_version:        u16,
-    minor_image_version:        u16,
-    major_subsystem_version:    u16,
-    minor_subsystem_version:    u16,
-    win32_version:              u32,
-    size_of_image:              u32,
-    size_of_headers:            u32,
-    checksum:                   u32,
-    subsystem:                  u16,
-    dll_characteristics:        u16,
-    size_of_stack_reserve:      u64,
-    size_of_stack_commit:       u64,
-    size_of_heap_reserve:       u64,
-    size_of_heap_commit:        u64,
-    loader_flags:               u32,
-    num_tables:                 u32,
+    entry: u32,
+    code_base: u32,
+    image_base: u64,
+    section_align: u32,
+    file_align: u32,
+    major_os_version: u16,
+    minor_os_version: u16,
+    major_image_version: u16,
+    minor_image_version: u16,
+    major_subsystem_version: u16,
+    minor_subsystem_version: u16,
+    win32_version: u32,
+    size_of_image: u32,
+    size_of_headers: u32,
+    checksum: u32,
+    subsystem: u16,
+    dll_characteristics: u16,
+    size_of_stack_reserve: u64,
+    size_of_stack_commit: u64,
+    size_of_heap_reserve: u64,
+    size_of_heap_commit: u64,
+    loader_flags: u32,
+    num_tables: u32,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct ImageDataDirectory {
     vaddr: u32,
-    size:  u32,
+    size: u32,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct ImageSectionHeader {
-    name:                    [u8; 8],
-    vsize:                   u32,
-    vaddr:                   u32,
-    raw_data_size:           u32,
-    pointer_to_raw_data:     u32,
-    pointer_to_relocations:  u32,
+    name: [u8; 8],
+    vsize: u32,
+    vaddr: u32,
+    raw_data_size: u32,
+    pointer_to_raw_data: u32,
+    pointer_to_relocations: u32,
     pointer_to_line_numbers: u32,
-    number_of_relocations:   u16,
-    number_of_line_numbers:  u16,
-    characteristics:         u32,
+    number_of_relocations: u16,
+    number_of_line_numbers: u16,
+    characteristics: u32,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct ImageDebugDirectory {
-    characteristics:      u32,
-    timestamp:            u32,
-    major_version:        u16,
-    minor_version:        u16,
-    typ:                  u32,
-    size_of_data:         u32,
-    address_of_raw_data:  u32,
-    pointer_to_raw_data:  u32,
+    characteristics: u32,
+    timestamp: u32,
+    major_version: u16,
+    minor_version: u16,
+    typ: u32,
+    size_of_data: u32,
+    address_of_raw_data: u32,
+    pointer_to_raw_data: u32,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct CodeviewEntry {
     signature: [u8; 4], // RSDS
-    guid_a:    u32,
-    guid_b:    u16,
-    guid_c:    u16,
-    guid_d:    [u8; 8],
-    age:       u32,
+    guid_a: u32,
+    guid_b: u16,
+    guid_c: u16,
+    guid_d: [u8; 8],
+    age: u32,
 }
 
 const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
@@ -273,25 +274,24 @@ const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
 ///
 /// User must make sure the shape of the structure `T` is safe to use in this
 /// way, hence being unsafe.
-unsafe fn read_struct<T: Copy>(fd: &mut std::fs::File) -> io::Result<T>
-{
+unsafe fn read_struct<T: Copy>(fd: &mut std::fs::File) -> io::Result<T> {
     let mut ret: T = std::mem::zeroed();
     fd.read_exact(std::slice::from_raw_parts_mut(
-            &mut ret as *mut _ as *mut u8,
-            std::mem::size_of_val(&ret)))?;
+        &mut ret as *mut _ as *mut u8,
+        std::mem::size_of_val(&ret),
+    ))?;
     Ok(ret)
 }
 
 /// Implementation mimicing #![feature(range_contains)] for those stable rust
 /// users.
-fn contains(range: &std::ops::Range<u32>, item: u32) -> bool
-{
+fn contains(range: &std::ops::Range<u32>, item: u32) -> bool {
     (range.start <= item) && (item < range.end)
 }
 
-fn parse_pe(filename: &Path) ->
-    Result<(std::fs::File, MZHeader, PEHeader, u32, u32), Box<dyn std::error::Error>>
-{
+fn parse_pe(
+    filename: &Path,
+) -> Result<(std::fs::File, MZHeader, PEHeader, u32, u32), Box<dyn std::error::Error>> {
     let mut fd = std::fs::File::open(filename)?;
 
     /* Check for an MZ header */
@@ -301,8 +301,7 @@ fn parse_pe(filename: &Path) ->
     }
 
     /* Seek to where the PE header should be */
-    if fd.seek(SeekFrom::Start(mz_header.new_header as u64))? !=
-            mz_header.new_header as u64 {
+    if fd.seek(SeekFrom::Start(mz_header.new_header as u64))? != mz_header.new_header as u64 {
         return Err("Failed to seek to PE header".into());
     }
 
@@ -322,21 +321,22 @@ fn parse_pe(filename: &Path) ->
             let opthdr: WindowsPEHeader64 = unsafe { read_struct(&mut fd)? };
             (opthdr.size_of_image, opthdr.num_tables)
         }
-        _ => return Err("Unsupported PE machine type".into())
+        _ => return Err("Unsupported PE machine type".into()),
     };
 
     Ok((fd, mz_header, pe_header, image_size, num_tables))
 }
 
-fn get_file_path(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
-{
+fn get_file_path(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let (_, _, pe_header, image_size, _) = parse_pe(filename)?;
 
-    let filestr = format!("filestore/{}/{:08x}{:x}/{}",
-                          filename.file_name().unwrap().to_str().unwrap(),
-                          {pe_header.timestamp},
-                          image_size,
-                          filename.file_name().unwrap().to_str().unwrap());
+    let filestr = format!(
+        "filestore/{}/{:08x}{:x}/{}",
+        filename.file_name().unwrap().to_str().unwrap(),
+        { pe_header.timestamp },
+        image_size,
+        filename.file_name().unwrap().to_str().unwrap()
+    );
 
     /* For hashes
     let filestr = format!("{},{:08x}{:x},1",
@@ -355,10 +355,8 @@ fn get_file_path(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
 ///
 /// Returns a string which is the same representation you get from `symchk`
 /// when outputting a manifest for the PDB "<filename>,<guid><age>,1"
-fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
-{
-    let (mut fd, mz_header, pe_header, _, num_tables) =
-        parse_pe(filename)?;
+fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let (mut fd, mz_header, pe_header, _, num_tables) = parse_pe(filename)?;
 
     /* Load all the data directories into a vector */
     let mut data_dirs = Vec::new();
@@ -386,8 +384,8 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
     }
 
     /* Seek to where the section table should be */
-    let section_headers = mz_header.new_header as u64 + 0x18 +
-                          pe_header.optional_header_size as u64;
+    let section_headers =
+        mz_header.new_header as u64 + 0x18 + pe_header.optional_header_size as u64;
     if fd.seek(SeekFrom::Start(section_headers))? != section_headers {
         return Err("Failed to seek to section table".into());
     }
@@ -410,10 +408,10 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
         /* Check if the entire debug table is contained in this sections
          * virtual address range.
          */
-        if contains(&secrange, debug_table.vaddr) &&
-                contains(&secrange, debug_table.vaddr + debug_table.size - 1) {
-            debug_data = Some(debug_table.vaddr - section.vaddr +
-                              section.pointer_to_raw_data);
+        if contains(&secrange, debug_table.vaddr)
+            && contains(&secrange, debug_table.vaddr + debug_table.size - 1)
+        {
+            debug_data = Some(debug_table.vaddr - section.vaddr + section.pointer_to_raw_data);
             break;
         }
     }
@@ -446,8 +444,7 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
 
             /* Calculate theoretical string length based on the size of the
              * section vs the size of the header */
-            let cv_strlen = de.size_of_data as usize -
-                std::mem::size_of_val(&cv);
+            let cv_strlen = de.size_of_data as usize - std::mem::size_of_val(&cv);
 
             /* Read in the debug path */
             let mut dpath = vec![0u8; cv_strlen];
@@ -475,12 +472,12 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
                                           {cv.guid_d[4]}, {cv.guid_d[5]},
                                           {cv.guid_d[6]}, {cv.guid_d[7]},
                                           {cv.age});
-                    return Ok(guidstr)
+                    return Ok(guidstr);
                 } else {
-                    return Err("Could not parse file from RSDS path".into())
+                    return Err("Could not parse file from RSDS path".into());
                 }
             } else {
-                return Err("Failed to find null terminiator in RSDS".into())
+                return Err("Failed to find null terminiator in RSDS".into());
             }
         }
     }
@@ -488,17 +485,8 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>>
     Err("Failed to find RSDS codeview directory".into())
 }
 
-fn download_worker(filename: PathBuf, sympath: String)
-{
-    let _ = Command::new("symchk").args(
-        &["/im", filename.to_str().unwrap(), "/s",
-        sympath.as_str()]).
-        output().expect("Failed to run command");
-}
-
 #[tokio::main]
-async fn main()
-{
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     let it = Instant::now();
@@ -511,33 +499,39 @@ async fn main()
         let pb = ProgressBar::new(listing.len() as u64);
 
         // Map the listing into strings to write into the manifest
-        let tasks: Vec<_> = listing.into_iter().filter_map(move |e| {
-            let pb = pb.clone();
+        let tasks: Vec<_> = listing
+            .into_iter()
+            .filter_map(move |e| {
+                let pb = pb.clone();
 
-            match e {
-                Ok(e) => Some(tokio::spawn(async move {
-                    pb.inc(1);
-                    
-                    match get_pdb(&e.path()) {
-                        Ok(manifest_str) => Some(manifest_str),
-                        Err(_) => None,
-                    }
-                })),
+                match e {
+                    Ok(e) => Some(tokio::spawn(async move {
+                        pb.inc(1);
 
-                Err(_) => None,
-            }
-        }).collect();
+                        match get_pdb(&e.path()) {
+                            Ok(manifest_str) => Some(manifest_str),
+                            Err(_) => None,
+                        }
+                    })),
 
-        let mut output_file = tokio::fs::File::create("manifest").await.expect("Failed to create output manifest file");
+                    Err(_) => None,
+                }
+            })
+            .collect();
+
+        let mut output_file = tokio::fs::File::create("manifest")
+            .await
+            .expect("Failed to create output manifest file");
 
         for task in tasks {
             if let Some(e) = task.await.unwrap() {
-                output_file.write(&format!("{}\n", &e).as_bytes()).await.unwrap();
+                output_file
+                    .write(&format!("{}\n", &e).as_bytes())
+                    .await
+                    .unwrap();
             }
         }
     } else if args.len() == 3 && args[1] == "download" {
-        const NUM_PIECES: usize = 64;
-
         /* Read the entire manifest file into a string */
         let mut buf = String::new();
         let mut fd = match std::fs::File::open("manifest") {
@@ -545,24 +539,18 @@ async fn main()
             Err(_) => {
                 print!("Failed to open manifest, did you create one?\n");
                 return;
-            },
+            }
         };
         fd.read_to_string(&mut buf).expect("Failed to read file");
 
         /* Split the file into lines and collect into a vector */
-        let mut lines: Vec<String> =
-            buf.lines().map(|l| String::from(l)).collect();
+        let mut lines: Vec<String> = buf.lines().map(|l| String::from(l)).collect();
 
         /* If there is nothing to download, return out early */
         if lines.len() == 0 {
             print!("Nothing to download\n");
             return;
         }
-
-        /* Calculate number of entries per temporary manifest to split into
-         * NUM_PIECES chunks.
-         */
-        let chunk_size = (lines.len() + NUM_PIECES - 1) / NUM_PIECES;
 
         print!("Original manifest has {} PDBs\n", lines.len());
 
@@ -571,58 +559,33 @@ async fn main()
 
         print!("Deduped manifest has {} PDBs\n", lines.len());
 
-        /* Shuffle filenames so files are not biased to the downloader based
-         * on name. This should lead to download threads having more even
-         * work.
-         */
-        thread_rng().shuffle(&mut lines);
-
-        /* Create worker threads downloading each chunk using symchk */
-        let mut threads = Vec::new();
-        for (ii, lines) in lines.chunks(chunk_size).enumerate() {
-            let mut tmp_path = env::temp_dir();
-            tmp_path.push(format!("manifest_{:04}", ii));
-
-            {
-                /* Create chunked manifest file */
-                let mut fd = std::fs::File::create(&tmp_path).
-                    expect("Failed to create split manifest");
-                fd.write_all(lines.join("\n").as_bytes()).
-                    expect("Failed to write split manifest");
-            }
-
-            /* Create worker */
-            let sympath = args[2].clone();
-            threads.push(thread::spawn(move || {
-                download_worker(tmp_path, sympath);
-            }));
-        }
-
-        /* Wait for all threads to complete. Discard return status */
-        for thr in threads {
-            let _ = thr.join();
+        match sym::download_manifest(args[2].clone(), lines) {
+            Ok(_) => println!("Success!"),
+            Err(e) => println!("Failed: {}", e),
         }
     } else if args.len() == 3 && args[1] == "filestore" {
         /* List all files in the directory specified by args[2] */
         let dir = Path::new(args[2].as_str());
         let listing = recursive_listdir(&dir);
 
-        listing.for_each(|entry| async {
-            if let Ok(e) = entry {
-                if let Ok(fsname) = get_file_path(&e.path()) {
-                    let fsname = Path::new(&fsname);
+        listing
+            .for_each(|entry| async {
+                if let Ok(e) = entry {
+                    if let Ok(fsname) = get_file_path(&e.path()) {
+                        let fsname = Path::new(&fsname);
 
-                    if !fsname.exists() {
-                        let dir = fsname.parent().unwrap();
-                        tokio::fs::create_dir_all(dir).await.unwrap();
+                        if !fsname.exists() {
+                            let dir = fsname.parent().unwrap();
+                            tokio::fs::create_dir_all(dir).await.unwrap();
 
-                        if let Err(_) = tokio::fs::copy(&e.path(), fsname).await {
-                            print!("Failed to copy file {:?}\n", &e.path());
+                            if let Err(_) = tokio::fs::copy(&e.path(), fsname).await {
+                                print!("Failed to copy file {:?}\n", &e.path());
+                            }
                         }
                     }
                 }
-            }
-        }).await;
+            })
+            .await;
     } else if args.len() == 2 && args[1] == "clean" {
         /* Ignores all errors during clean */
         let _ = std::fs::remove_dir_all("symbols");
@@ -635,4 +598,3 @@ async fn main()
 
     print!("Time elapsed: {} seconds\n", it.elapsed().as_secs());
 }
-
