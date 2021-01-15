@@ -4,6 +4,9 @@ use std::error::Error;
 extern crate futures;
 extern crate reqwest;
 extern crate tokio;
+extern crate indicatif;
+
+use indicatif::{ProgressBar,ProgressStyle};
 
 use futures::stream::StreamExt;
 
@@ -63,8 +66,17 @@ pub fn download_manifest(srvlist: String, files: Vec<String>) -> Result<(), Box<
     // The following code is based off of the above blog post.
     let client = reqwest::Client::new();
 
+    // Create a progress bar.
+    let pb = ProgressBar::new(files.len() as u64);
+
+    pb.set_style(
+        ProgressStyle::default_bar().
+            template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}")
+            .progress_chars("##-")
+    );
+
     // Set up our asynchronous code block.
-    // This block will be lazily executed when something awaits on it, such as the tokio thead pool below.
+    // This block will be lazily executed when something awaits on it, such as the tokio thread pool below.
     let queries = futures::stream::iter(
         // Map the files vector using a closure, such that it's converted from a Vec<String>
         // into a Vec<Result<T, E>>
@@ -72,6 +84,7 @@ pub fn download_manifest(srvlist: String, files: Vec<String>) -> Result<(), Box<
             // Take explicit references to a few variables and move them into the async block.
             let client = &client;
             let srv = &srv;
+            let pb = pb.clone();
 
             async move {
                 // Break out the filename into the separate components.
@@ -87,15 +100,18 @@ pub fn download_manifest(srvlist: String, files: Vec<String>) -> Result<(), Box<
 
                 // Check to see if the file already exists. If so, skip it.
                 if std::path::Path::new(&format!("{}/{}", srv.filepath, pdbpath)).exists() {
+                    pb.inc(1);
                     return Ok(());
                 }
 
-                println!("{}/{}", el[0], el[1]);
+                // println!("{}/{}", el[0], el[1]);
+                pb.set_message(format!("{}/{}", el[1], el[0]).as_str());
+                pb.inc(1);
 
                 // Attempt to retrieve the file.
                 let req = client.get::<&str>(&format!("{}/{}", srv.server, pdbpath).to_string()).send().await?;
                 if req.status() != 200 {
-                    return Err(format!("Code {}", req.status()).into());
+                    return Err(format!("File {} - Code {}", pdbpath, req.status()).into());
                 }
 
                 // Create the output file.
@@ -112,7 +128,20 @@ pub fn download_manifest(srvlist: String, files: Vec<String>) -> Result<(), Box<
 
     // Start up a tokio runtime and run through the requests.
     let mut rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(queries);
+    let output = rt.block_on(queries);
+
+    pb.finish();
+
+    // Collect output results.
+    output.iter().for_each(|x| {
+        match x {
+            Err(res) => {
+                println!("{}", res);
+            }
+
+            Ok(_) => (),
+        }
+    });
 
     return Ok(());
 }
