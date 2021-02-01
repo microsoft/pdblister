@@ -1,3 +1,8 @@
+#![allow(unknown_lints)]
+#![warn(clippy::all)]
+
+#![allow(clippy::needless_return)]
+
 use std::str::FromStr;
 use std::error::Error;
 
@@ -20,7 +25,7 @@ impl FromStr for SymSrv {
 
     fn from_str(srv: &str) -> Result<Self, Self::Err> {
         // Split the path out by asterisks.
-        let directives: Vec<&str> = srv.split("*").collect();
+        let directives: Vec<&str> = srv.split('*').collect();
 
         // Ensure that the path starts with `SRV*` - the only form we currently support.
         match directives.first() {
@@ -49,15 +54,28 @@ impl FromStr for SymSrv {
     }
 }
 
-pub fn download_manifest(srvlist: String, files: Vec<String>) -> Result<(), Box<dyn Error>> {
+fn parse_servers(srvstr: String) -> Result<Vec<SymSrv>, Box<dyn Error>> {
+    let server_list: Vec<&str> = srvstr.split(';').collect();
+    if server_list.is_empty() {
+        return Err("Invalid server string!".into());
+    }
+
+    let symbol_servers = server_list.into_iter().map(|symstr| {
+        return symstr.parse::<SymSrv>();
+    }).collect();
+
+    return symbol_servers;
+}
+
+pub fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(), Box<dyn Error>> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
-    let srvstr: Vec<&str> = srvlist.split(";").collect();
-    if srvstr.len() != 1 {
+    let srvs = parse_servers(srvstr)?;
+    if srvs.len() != 1 {
         return Err("Only one symbol server/path supported at this time.".into());
     }
 
-    let srv: SymSrv = SymSrv::from_str(srvstr[0])?;
+    let srv = &srvs[0];
 
     // Create the directory first, if it does not exist.
     std::fs::create_dir_all(srv.filepath.clone())?;
@@ -88,13 +106,13 @@ pub fn download_manifest(srvlist: String, files: Vec<String>) -> Result<(), Box<
 
             async move {
                 // Break out the filename into the separate components.
-                let el: Vec<&str> = line.split(",").collect();
+                let el: Vec<&str> = line.split(',').collect();
                 if el.len() != 3 {
                     panic!("Invalid manifest line encountered: \"{}\"", line);
                 }
                 
                 // Create the directory tree.
-                std::fs::create_dir_all(format!("{}/{}/{}", srv.filepath, el[0], el[1]).to_string())?;
+                std::fs::create_dir_all(format!("{}/{}/{}", srv.filepath, el[0], el[1]))?;
 
                 let pdbpath = format!("{}/{}/{}", el[0], el[1], el[0]);
 
