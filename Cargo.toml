@@ -9,8 +9,7 @@ futures = "0.3.13"
 indicatif = "0.15.0"
 pin-utils = "0.1.0"
 rand = "0.3"
-reqwest = "0.10.8"
-indicatif = "0.15.0"
+reqwest = "0.11.0"
 
 [dependencies.tokio]
 version = "1.7.1"
