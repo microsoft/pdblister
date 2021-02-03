@@ -145,7 +145,7 @@ pub fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(), Box<d
     // That way we don't exhaust system resources in the networking stack or filesystem.
 
     // Start up a tokio runtime and run through the requests.
-    let mut rt = tokio::runtime::Runtime::new()?;
+    let rt = tokio::runtime::Runtime::new()?;
     let output = rt.block_on(queries);
 
     pb.finish();
