@@ -10,17 +10,27 @@
 /// has been generated use `symchk /im manifest /s <symbol path>`
 
 extern crate rand;
+extern crate tokio;
+extern crate futures;
+extern crate indicatif;
 
+use io::Write;
 use rand::{thread_rng, Rng};
 
-use std::io;
+use std::io::{self, Read, Seek};
 use std::env;
 use std::time::Instant;
 use std::thread;
 use std::process::Command;
-use std::fs::File;
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{SeekFrom};
 use std::path::{Path, PathBuf};
+
+use futures::{stream, Stream, StreamExt};
+use indicatif::ProgressBar;
+use tokio::{
+    fs::{self, DirEntry},
+    io::AsyncWriteExt,
+};
 
 const USAGE: &'static str =
 "Usage:
@@ -72,28 +82,36 @@ const USAGE: &'static str =
 /// Set this to true to enable status/progress messages
 const STATUS_MESSAGES: bool = true;
 
-/// Given a `path`, return a vector of all the files recursively found from
+/// Given a `path`, return a stream of all the files recursively found from
 /// that path.
-///
-/// This eats read_dir() errors to avoid Permission Denied stuff. It could be
-/// improved by being more selective with ignoring errors.
-fn recursive_listdir(path: &Path) -> io::Result<Vec<PathBuf>>
-{
-    let mut result = Vec::new();
+fn recursive_listdir(path: impl Into<PathBuf>) -> impl Stream<Item = io::Result<DirEntry>> + Send + 'static {
+    async fn one_level(path: PathBuf, to_visit: &mut Vec<PathBuf>) -> io::Result<Vec<DirEntry>> {
+        let mut dir = fs::read_dir(path).await?;
+        let mut files = Vec::new();
 
-    if let Ok(dirlisting) = path.read_dir() {
-        for entry in dirlisting {
-            let path = entry?.path();
-
-            if path.is_dir() {
-                result.append(&mut recursive_listdir(&path)?);
+        while let Some(child) = dir.next_entry().await? {
+            if child.metadata().await?.is_dir() {
+                to_visit.push(child.path());
             } else {
-                result.push(path);
+                files.push(child)
             }
         }
+
+        Ok(files)
     }
 
-    Ok(result)
+    stream::unfold(vec![path.into()], |mut to_visit| {
+        async {
+            let path = to_visit.pop()?;
+            let file_stream = match one_level(path, &mut to_visit).await {
+                Ok(files) => stream::iter(files).map(Ok).left_stream(),
+                Err(e) => stream::once(async { Err(e) }).right_stream(),
+            };
+
+            Some((file_stream, to_visit))
+        }
+    })
+    .flatten()
 }
 
 #[repr(C, packed)]
@@ -255,7 +273,7 @@ const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
 ///
 /// User must make sure the shape of the structure `T` is safe to use in this
 /// way, hence being unsafe.
-unsafe fn read_struct<T: Copy>(fd: &mut File) -> io::Result<T>
+unsafe fn read_struct<T: Copy>(fd: &mut std::fs::File) -> io::Result<T>
 {
     let mut ret: T = std::mem::zeroed();
     fd.read_exact(std::slice::from_raw_parts_mut(
@@ -272,9 +290,9 @@ fn contains(range: &std::ops::Range<u32>, item: u32) -> bool
 }
 
 fn parse_pe(filename: &Path) ->
-    Result<(File, MZHeader, PEHeader, u32, u32), Box<dyn std::error::Error>>
+    Result<(std::fs::File, MZHeader, PEHeader, u32, u32), Box<dyn std::error::Error>>
 {
-    let mut fd = File::open(filename)?;
+    let mut fd = std::fs::File::open(filename)?;
 
     /* Check for an MZ header */
     let mz_header: MZHeader = unsafe { read_struct(&mut fd)? };
@@ -478,7 +496,8 @@ fn download_worker(filename: PathBuf, sympath: String)
         output().expect("Failed to run command");
 }
 
-fn main()
+#[tokio::main]
+async fn main()
 {
     let args: Vec<String> = env::args().collect();
 
@@ -486,40 +505,42 @@ fn main()
 
     if args.len() == 3 && args[1] == "manifest" {
         /* List all files in the directory specified by args[2] */
-        print!("Generating file listing...\n");
-        let listing = recursive_listdir(&Path::new(args[2].as_str())).
-            expect("Failed to list directory");
-        print!("Done!\n");
+        let dir = Path::new(args[2].as_str());
+        let listing: Vec<Result<DirEntry, io::Error>> = recursive_listdir(dir).collect().await;
 
-        /* For each file, try to parse PDB information out of it and print the
-         * manifest-style information to the screen.
-         */
-        let mut output_pdbs = Vec::new();
-        for (ii, filename) in listing.iter().enumerate() {
-            if let Ok(manifest_str) = get_pdb(&filename) {
-                output_pdbs.push(manifest_str);
+        let pb = ProgressBar::new(listing.len() as u64);
+
+        // Map the listing into strings to write into the manifest
+        let tasks: Vec<_> = listing.into_iter().filter_map(move |e| {
+            let pb = pb.clone();
+
+            match e {
+                Ok(e) => Some(tokio::spawn(async move {
+                    pb.inc(1);
+                    
+                    match get_pdb(&e.path()) {
+                        Ok(manifest_str) => Some(manifest_str),
+                        Err(_) => None,
+                    }
+                })),
+
+                Err(_) => None,
             }
+        }).collect();
 
-            if STATUS_MESSAGES {
-                print!("\rParsed {} of {} files ({} pdbs)",
-                    ii + 1, listing.len(), output_pdbs.len());
+        let mut output_file = tokio::fs::File::create("manifest").await.expect("Failed to create output manifest file");
+
+        for task in tasks {
+            if let Some(e) = task.await.unwrap() {
+                output_file.write(&format!("{}\n", &e).as_bytes()).await.unwrap();
             }
         }
-        print!("\n");
-
-        let mut output_file = File::create("manifest").
-            expect("Failed to create output manifest file");
-
-        /* Write out all the PDBs */
-        output_file.write_all(output_pdbs.join("\n").as_bytes()).
-            expect("Failed to write pdbs to manifest file");
-
     } else if args.len() == 3 && args[1] == "download" {
         const NUM_PIECES: usize = 64;
 
         /* Read the entire manifest file into a string */
         let mut buf = String::new();
-        let mut fd = match File::open("manifest") {
+        let mut fd = match std::fs::File::open("manifest") {
             Ok(fd) => fd,
             Err(_) => {
                 print!("Failed to open manifest, did you create one?\n");
@@ -564,7 +585,7 @@ fn main()
 
             {
                 /* Create chunked manifest file */
-                let mut fd = File::create(&tmp_path).
+                let mut fd = std::fs::File::create(&tmp_path).
                     expect("Failed to create split manifest");
                 fd.write_all(lines.join("\n").as_bytes()).
                     expect("Failed to write split manifest");
@@ -583,35 +604,25 @@ fn main()
         }
     } else if args.len() == 3 && args[1] == "filestore" {
         /* List all files in the directory specified by args[2] */
-        print!("Generating file listing...\n");
-        let listing = recursive_listdir(&Path::new(args[2].as_str())).
-            expect("Failed to list directory");
-        print!("Done!\n");
+        let dir = Path::new(args[2].as_str());
+        let listing = recursive_listdir(&dir);
 
-        let mut copies = 0;
-        for (ii, filename) in listing.iter().enumerate() {
-            if let Ok(fsname) = get_file_path(filename) {
-                let fsname = Path::new(&fsname);
+        listing.for_each(|entry| async {
+            if let Ok(e) = entry {
+                if let Ok(fsname) = get_file_path(&e.path()) {
+                    let fsname = Path::new(&fsname);
 
-                if !fsname.exists() {
-                    let dir = fsname.parent().unwrap();
-                    std::fs::create_dir_all(dir).unwrap();
-                    
-                    if let Err(_) = std::fs::copy(filename, fsname) {
-                        print!("Failed to copy file {:?}\n", filename);
-                    } else {
-                        copies += 1;
+                    if !fsname.exists() {
+                        let dir = fsname.parent().unwrap();
+                        tokio::fs::create_dir_all(dir).await.unwrap();
+
+                        if let Err(_) = tokio::fs::copy(&e.path(), fsname).await {
+                            print!("Failed to copy file {:?}\n", &e.path());
+                        }
                     }
                 }
             }
-
-            if STATUS_MESSAGES {
-                print!("\rParsed {} of {} files ({} copies)",
-                    ii + 1, listing.len(), copies);
-            }
-        }
-        print!("\n");
-
+        }).await;
     } else if args.len() == 2 && args[1] == "clean" {
         /* Ignores all errors during clean */
         let _ = std::fs::remove_dir_all("symbols");

@@ -2,7 +2,12 @@
 name = "pdblister"
 version = "0.1.0"
 authors = ["Gogs <gogs@fake.local>"]
+edition = "2018"
 
 [dependencies]
+futures = "0.3.13"
+indicatif = "0.15.0"
+pin-utils = "0.1.0"
 rand = "0.3"
+tokio = { version = "1.5.0", features = ["fs", "macros", "io-util", "rt-multi-thread"] }
 
