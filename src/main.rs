@@ -603,5 +603,5 @@ async fn main() {
         print!("{}", USAGE);
     }
 
-    print!("Time elapsed: {} seconds\n", it.elapsed().as_secs());
+    print!("Time elapsed: {:.3} seconds\n", it.elapsed().as_secs_f64());
 }
