@@ -1,29 +1,20 @@
-extern crate futures;
-extern crate indicatif;
-/// This is a tiny project to be a quick alternative to symchk for generating
-/// manifests. This mimics symchk of the form `symchk /om manifest /r <path>`
-/// but only looks for MZ/PE files.
-///
-/// Due to symchk doing some weird things it can often crash or get stuck in
-/// infinite loops. Thus this is a stricter (and much faster) alternative.
-///
-/// The output manifest is compatible with symchk and thus symchk is currently
-/// used for the actual download. To download symbols after this manifest
-/// has been generated use `symchk /im manifest /s <symbol path>`
-extern crate rand;
-extern crate tokio;
-
+//! This is a tiny project to be a quick alternative to symchk for generating
+//! manifests. This mimics symchk of the form `symchk /om manifest /r <path>`
+//! but only looks for MZ/PE files.
+//!
+//! Due to symchk doing some weird things it can often crash or get stuck in
+//! infinite loops. Thus this is a stricter (and much faster) alternative.
+//!
+//! The output manifest is compatible with symchk and thus symchk is currently
+//! used for the actual download. To download symbols after this manifest
+//! has been generated use `symchk /im manifest /s <symbol path>`
 use indicatif::ProgressStyle;
-use io::Write;
-use rand::{thread_rng, Rng};
 // use rand::{thread_rng, Rng};
 
 use std::env;
 use std::io::SeekFrom;
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::thread;
 use std::time::Instant;
 
 use futures::{stream, Stream, StreamExt};
@@ -80,9 +71,6 @@ const USAGE: &'static str = "Usage:
         This command removes the `manifest` file as well as the symbol folder
         and the filestore folder
 ";
-
-/// Set this to true to enable status/progress messages
-const STATUS_MESSAGES: bool = true;
 
 /// Given a `path`, return a stream of all the files recursively found from
 /// that path.
