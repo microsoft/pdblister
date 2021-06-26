@@ -68,7 +68,7 @@ fn parse_servers(srvstr: String) -> Result<Vec<SymSrv>, Box<dyn Error>> {
     return symbol_servers;
 }
 
-pub fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(), Box<dyn Error>> {
+pub async fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(), Box<dyn Error>> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
     let srvs = parse_servers(srvstr)?;
@@ -113,7 +113,7 @@ pub fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(), Box<d
                 }
 
                 // Create the directory tree.
-                std::fs::create_dir_all(format!("{}/{}/{}", srv.filepath, el[0], el[1]))?;
+                tokio::fs::create_dir_all(format!("{}/{}/{}", srv.filepath, el[0], el[1])).await?;
 
                 let pdbpath = format!("{}/{}/{}", el[0], el[1], el[0]);
 
@@ -151,10 +151,7 @@ pub fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(), Box<d
 
     // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
     // That way we don't exhaust system resources in the networking stack or filesystem.
-
-    // Start up a tokio runtime and run through the requests.
-    let rt = tokio::runtime::Runtime::new()?;
-    let output = rt.block_on(queries);
+    let output = queries.await;
 
     pb.finish();
 

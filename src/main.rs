@@ -559,7 +559,7 @@ async fn main() {
 
         print!("Deduped manifest has {} PDBs\n", lines.len());
 
-        match sym::download_manifest(args[2].clone(), lines) {
+        match sym::download_manifest(args[2].clone(), lines).await {
             Ok(_) => println!("Success!"),
             Err(e) => println!("Failed: {}", e),
         }
