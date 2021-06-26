@@ -13,6 +13,7 @@ extern crate indicatif;
 extern crate rand;
 extern crate tokio;
 
+use indicatif::ProgressStyle;
 use io::Write;
 use rand::{thread_rng, Rng};
 // use rand::{thread_rng, Rng};
@@ -497,6 +498,12 @@ async fn main() {
         let listing: Vec<Result<DirEntry, io::Error>> = recursive_listdir(dir).collect().await;
 
         let pb = ProgressBar::new(listing.len() as u64);
+
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}")
+                .progress_chars("##-"),
+        );
 
         // Map the listing into strings to write into the manifest
         let tasks: Vec<_> = listing
