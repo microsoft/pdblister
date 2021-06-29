@@ -8,6 +8,7 @@
 //! The output manifest is compatible with symchk and thus symchk is currently
 //! used for the actual download. To download symbols after this manifest
 //! has been generated use `symchk /im manifest /s <symbol path>`
+use anyhow::Context;
 use indicatif::ProgressStyle;
 // use rand::{thread_rng, Rng};
 
@@ -278,26 +279,24 @@ fn contains(range: &std::ops::Range<u32>, item: u32) -> bool {
     (range.start <= item) && (item < range.end)
 }
 
-fn parse_pe(
-    filename: &Path,
-) -> Result<(std::fs::File, MZHeader, PEHeader, u32, u32), Box<dyn std::error::Error>> {
+fn parse_pe(filename: &Path) -> anyhow::Result<(std::fs::File, MZHeader, PEHeader, u32, u32)> {
     let mut fd = std::fs::File::open(filename)?;
 
     /* Check for an MZ header */
     let mz_header: MZHeader = unsafe { read_struct(&mut fd)? };
     if &mz_header.signature != b"MZ" {
-        return Err("No MZ header present".into());
+        anyhow::bail!("No MZ header present");
     }
 
     /* Seek to where the PE header should be */
     if fd.seek(SeekFrom::Start(mz_header.new_header as u64))? != mz_header.new_header as u64 {
-        return Err("Failed to seek to PE header".into());
+        anyhow::bail!("Failed to seek to PE header");
     }
 
     /* Check for a PE header */
     let pe_header: PEHeader = unsafe { read_struct(&mut fd)? };
     if &pe_header.signature != b"PE\0\0" {
-        return Err("No PE header present".into());
+        anyhow::bail!("No PE header present");
     }
 
     /* Grab the number of tables from the bitness-specific table */
@@ -310,21 +309,27 @@ fn parse_pe(
             let opthdr: WindowsPEHeader64 = unsafe { read_struct(&mut fd)? };
             (opthdr.size_of_image, opthdr.num_tables)
         }
-        _ => return Err("Unsupported PE machine type".into()),
+        _ => anyhow::bail!("Unsupported PE machine type"),
     };
 
     Ok((fd, mz_header, pe_header, image_size, num_tables))
 }
 
-fn get_file_path(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
+fn get_file_path(filename: &Path) -> anyhow::Result<String> {
     let (_, _, pe_header, image_size, _) = parse_pe(filename)?;
+
+    let filename = filename
+        .file_name()
+        .context("Failed to get file name")?
+        .to_str()
+        .context("Failed to convert file name")?;
 
     let filestr = format!(
         "filestore/{}/{:08x}{:x}/{}",
-        filename.file_name().unwrap().to_str().unwrap(),
+        filename,
         { pe_header.timestamp },
         image_size,
-        filename.file_name().unwrap().to_str().unwrap()
+        filename
     );
 
     /* For hashes
@@ -344,7 +349,7 @@ fn get_file_path(filename: &Path) -> Result<String, Box<dyn std::error::Error>> 
 ///
 /// Returns a string which is the same representation you get from `symchk`
 /// when outputting a manifest for the PDB "<filename>,<guid><age>,1"
-fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
+fn get_pdb(filename: &Path) -> anyhow::Result<String> {
     let (mut fd, mz_header, pe_header, _, num_tables) = parse_pe(filename)?;
 
     /* Load all the data directories into a vector */
@@ -356,27 +361,27 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
 
     /* Debug directory is at offset 6, validate we have at least 7 entries */
     if data_dirs.len() < 7 {
-        return Err("No debug data directory".into());
+        anyhow::bail!("No debug data directory");
     }
 
     /* Grab the debug table */
     let debug_table = data_dirs[6];
     if debug_table.vaddr == 0 || debug_table.size == 0 {
-        return Err("Debug directory not present or zero sized".into());
+        anyhow::bail!("Debug directory not present or zero sized");
     }
 
     /* Validate debug table size is sane */
     let iddlen = std::mem::size_of::<ImageDebugDirectory>() as u32;
     let debug_table_ents = debug_table.size / iddlen;
     if (debug_table.size % iddlen) != 0 || debug_table_ents == 0 {
-        return Err("No debug entries or not mod ImageDebugDirectory".into());
+        anyhow::bail!("No debug entries or not mod ImageDebugDirectory");
     }
 
     /* Seek to where the section table should be */
     let section_headers =
         mz_header.new_header as u64 + 0x18 + pe_header.optional_header_size as u64;
     if fd.seek(SeekFrom::Start(section_headers))? != section_headers {
-        return Err("Failed to seek to section table".into());
+        anyhow::bail!("Failed to seek to section table");
     }
 
     /* Parse all the sections into a vector */
@@ -386,33 +391,35 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
         sections.push(sechdr);
     }
 
-    /* Find the section the debug table belongs to */
-    let mut debug_data = None;
-    for section in &sections {
-        /* We use raw_data_size instead of vsize as we are not loading the
-         * file and only care about raw contents in the file.
-         */
-        let secrange = section.vaddr..section.vaddr + section.raw_data_size;
+    let debug_raw_ptr = {
+        /* Find the section the debug table belongs to */
+        let mut debug_data = None;
+        for section in &sections {
+            /* We use raw_data_size instead of vsize as we are not loading the
+            * file and only care about raw contents in the file.
+            */
+            let secrange = section.vaddr..section.vaddr + section.raw_data_size;
 
-        /* Check if the entire debug table is contained in this sections
-         * virtual address range.
-         */
-        if contains(&secrange, debug_table.vaddr)
-            && contains(&secrange, debug_table.vaddr + debug_table.size - 1)
-        {
-            debug_data = Some(debug_table.vaddr - section.vaddr + section.pointer_to_raw_data);
-            break;
+            /* Check if the entire debug table is contained in this sections
+            * virtual address range.
+            */
+            if contains(&secrange, debug_table.vaddr)
+                && contains(&secrange, debug_table.vaddr + debug_table.size - 1)
+            {
+                debug_data = Some(debug_table.vaddr - section.vaddr + section.pointer_to_raw_data);
+                break;
+            }
         }
-    }
-
-    if debug_data.is_none() {
-        return Err("Unable to find debug data".into());
-    }
-    let debug_raw_ptr = debug_data.unwrap() as u64;
+    
+        match debug_data {
+            Some(d) => d as u64,
+            None => anyhow::bail!("Unable to find debug data"),
+        }
+    };
 
     /* Seek to where the debug directories should be */
     if fd.seek(SeekFrom::Start(debug_raw_ptr))? != debug_raw_ptr {
-        return Err("Failed to seek to debug directories".into());
+        anyhow::bail!("Failed to seek to debug directories");
     }
 
     /* Look through all debug table entries for codeview entries */
@@ -423,12 +430,12 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
             /* Seek to where the codeview entry should be */
             let cvo = de.pointer_to_raw_data as u64;
             if fd.seek(SeekFrom::Start(cvo))? != cvo {
-                return Err("Failed to seek to codeview entry".into());
+                anyhow::bail!("Failed to seek to codeview entry");
             }
 
             let cv: CodeviewEntry = unsafe { read_struct(&mut fd)? };
             if &cv.signature != b"RSDS" {
-                return Err("No RSDS signature present in codeview ent".into());
+                anyhow::bail!("No RSDS signature present in codeview ent");
             }
 
             /* Calculate theoretical string length based on the size of the
@@ -454,7 +461,7 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
                      * "%s,%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%x,1"
                      */
                     let guidstr = format!("{},{:08X}{:04X}{:04X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:x},1",
-                                          pdbfilename.to_str().unwrap(),
+                                          pdbfilename.to_str().context("Failed to get PDB filename")?,
                                           {cv.guid_a}, {cv.guid_b}, {cv.guid_c},
                                           {cv.guid_d[0]}, {cv.guid_d[1]},
                                           {cv.guid_d[2]}, {cv.guid_d[3]},
@@ -463,19 +470,18 @@ fn get_pdb(filename: &Path) -> Result<String, Box<dyn std::error::Error>> {
                                           {cv.age});
                     return Ok(guidstr);
                 } else {
-                    return Err("Could not parse file from RSDS path".into());
+                    anyhow::bail!("Could not parse file from RSDS path");
                 }
             } else {
-                return Err("Failed to find null terminiator in RSDS".into());
+                anyhow::bail!("Failed to find null terminiator in RSDS");
             }
         }
     }
 
-    Err("Failed to find RSDS codeview directory".into())
+    anyhow::bail!("Failed to find RSDS codeview directory")
 }
 
-#[tokio::main]
-async fn main() {
+async fn run() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
 
     let it = Instant::now();
@@ -516,26 +522,20 @@ async fn main() {
 
         let mut output_file = tokio::fs::File::create("manifest")
             .await
-            .expect("Failed to create output manifest file");
+            .context("Failed to create output manifest file")?;
 
         for task in tasks {
             if let Some(e) = task.await.unwrap() {
                 output_file
                     .write(&format!("{}\n", &e).as_bytes())
                     .await
-                    .unwrap();
+                    .context("Failed to write to output manifest file")?;
             }
         }
     } else if args.len() == 3 && args[1] == "download" {
         /* Read the entire manifest file into a string */
         let mut buf = String::new();
-        let mut fd = match std::fs::File::open("manifest") {
-            Ok(fd) => fd,
-            Err(_) => {
-                print!("Failed to open manifest, did you create one?\n");
-                return;
-            }
-        };
+        let mut fd = std::fs::File::open("manifest").context("Failed to open PDB manifest file")?;
         fd.read_to_string(&mut buf).expect("Failed to read file");
 
         /* Split the file into lines and collect into a vector */
@@ -544,7 +544,7 @@ async fn main() {
         /* If there is nothing to download, return out early */
         if lines.len() == 0 {
             print!("Nothing to download\n");
-            return;
+            return Ok(());
         }
 
         print!("Original manifest has {} PDBs\n", lines.len());
@@ -571,7 +571,9 @@ async fn main() {
 
                         if !fsname.exists() {
                             let dir = fsname.parent().unwrap();
-                            tokio::fs::create_dir_all(dir).await.unwrap();
+                            tokio::fs::create_dir_all(dir)
+                                .await
+                                .expect("Failed to create filestore directory");
 
                             if let Err(_) = tokio::fs::copy(&e.path(), fsname).await {
                                 print!("Failed to copy file {:?}\n", &e.path());
@@ -592,4 +594,10 @@ async fn main() {
     }
 
     print!("Time elapsed: {:.3} seconds\n", it.elapsed().as_secs_f64());
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    run().await.unwrap();
 }

@@ -14,13 +14,18 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use futures::stream::StreamExt;
 
+enum DownloadStatus {
+    AlreadyExists,
+    DownloadedOk,
+}
+
 struct SymSrv {
     server: String,
     filepath: String,
 }
 
 impl FromStr for SymSrv {
-    type Err = Box<dyn Error>;
+    type Err = anyhow::Error;
 
     fn from_str(srv: &str) -> Result<Self, Self::Err> {
         // Split the path out by asterisks.
@@ -32,7 +37,7 @@ impl FromStr for SymSrv {
             Some(x) => {
                 if "SRV" == *x {
                     if directives.len() != 3 {
-                        return Err("".into());
+                        anyhow::bail!("");
                     }
 
                     // Alright, the directive is of the proper form. Return the server and filepath.
@@ -44,7 +49,7 @@ impl FromStr for SymSrv {
             }
 
             None => {
-                return Err("Unsupported server string form".into());
+                anyhow::bail!("Unsupported server string form");
             }
         };
 
@@ -52,28 +57,26 @@ impl FromStr for SymSrv {
     }
 }
 
-fn parse_servers(srvstr: String) -> Result<Vec<SymSrv>, Box<dyn Error>> {
+fn parse_servers(srvstr: String) -> anyhow::Result<Vec<SymSrv>> {
     let server_list: Vec<&str> = srvstr.split(';').collect();
     if server_list.is_empty() {
-        return Err("Invalid server string!".into());
+        anyhow::bail!("Invalid server string");
     }
 
-    let symbol_servers = server_list
+    server_list
         .into_iter()
         .map(|symstr| {
-            return symstr.parse::<SymSrv>();
+            symstr.parse::<SymSrv>()
         })
-        .collect();
-
-    return symbol_servers;
+        .collect()
 }
 
-pub async fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(), Box<dyn Error>> {
+pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
     let srvs = parse_servers(srvstr)?;
     if srvs.len() != 1 {
-        return Err("Only one symbol server/path supported at this time.".into());
+        anyhow::bail!("Only one symbol server/path supported at this time");
     }
 
     let srv = &srvs[0];
@@ -120,7 +123,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(),
                 // Check to see if the file already exists. If so, skip it.
                 if std::path::Path::new(&format!("{}/{}", srv.filepath, pdbpath)).exists() {
                     pb.inc(1);
-                    return Ok(());
+                    return Ok(DownloadStatus::AlreadyExists);
                 }
 
                 // println!("{}/{}", el[0], el[1]);
@@ -133,7 +136,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(),
                     .send()
                     .await?;
                 if req.status() != 200 {
-                    return Err(format!("File {} - Code {}", pdbpath, req.status()).into());
+                    return Err(anyhow::anyhow!("File {} - Code {}", pdbpath, req.status()));
                 }
 
                 // Create the output file.
@@ -142,12 +145,12 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(),
                         .await?;
                 tokio::io::copy(&mut req.bytes().await?.as_ref(), &mut file).await?;
 
-                return Ok(());
+                return Ok(DownloadStatus::DownloadedOk);
             }
         }),
     )
     .buffer_unordered(64)
-    .collect::<Vec<Result<(), Box<dyn Error>>>>();
+    .collect::<Vec<anyhow::Result<DownloadStatus>>>();
 
     // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
     // That way we don't exhaust system resources in the networking stack or filesystem.
@@ -155,14 +158,26 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> Result<(),
 
     pb.finish();
 
+    let mut ok = 0u64;
+    let mut ok_exists = 0u64;
+    let mut err = 0u64;
+
     // Collect output results.
     output.iter().for_each(|x| match x {
         Err(res) => {
-            println!("{}", res);
+            eprintln!("{}", res);
+            err += 1;
         }
 
-        Ok(_) => (),
+        Ok(s) => match s {
+            DownloadStatus::AlreadyExists => ok_exists += 1,
+            DownloadStatus::DownloadedOk => ok += 1,
+        },
     });
+
+    println!("{} files failed to download", err);
+    println!("{} files already downloaded", ok_exists);
+    println!("{} files downloaded successfully", ok);
 
     return Ok(());
 }
