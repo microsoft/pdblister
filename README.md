@@ -7,9 +7,10 @@ but only looks for MZ/PE files.
 Due to symchk doing some weird things it can often crash or get stuck in
 infinite loops. Thus this is a stricter (and much faster) alternative.
 
-The output manifest is compatible with symchk and thus symchk is currently
-used for the actual download. To download symbols after this manifest
-has been generated use `symchk /im manifest /s <symbol path>`
+The output manifest is compatible with symchk. If you want to use symchk
+in lieu of this tool, use `symchk /im manifest /s <symbol path>`
+
+![](docs/images/download.gif)
 
 # Usage
 
@@ -79,9 +80,10 @@ access only occurs if it sees an MZ and PE header and everything is valid).
 It also generates the manifest in memory and dumps it out in one swoop, this is
 one large bottleneck original symchk has.
 
-Then for downloads it splits the manifest into chunks to pass to symchk. By
-default symchk only peaks at about 3-4 Mbps of network usage, but when split
-up (into 64 threads), I can max out my internet at 180 Mbps.
+Then for downloads it chomps through a manifest file asynchronously, at up to
+16 files at the same time! The original `symchk` only peaks at about 3-4 Mbps
+of network usage, but this tool saturates my internet connection at
+400 Mbps.
 
 Look how damn fast this stuff is!
 
