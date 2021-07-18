@@ -495,7 +495,7 @@ async fn run() -> anyhow::Result<()> {
 
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {wide_bar:40.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}")
+                .template("[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}")
                 .progress_chars("##-"),
         );
 
