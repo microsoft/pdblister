@@ -25,7 +25,7 @@ use tokio::{
     io::AsyncWriteExt,
 };
 
-mod sym;
+mod symsrv;
 
 const USAGE: &'static str = "Usage:
 
@@ -554,7 +554,7 @@ async fn run() -> anyhow::Result<()> {
 
         print!("Deduped manifest has {} PDBs\n", lines.len());
 
-        match sym::download_manifest(args[2].clone(), lines).await {
+        match symsrv::download_manifest(args[2].clone(), lines).await {
             Ok(_) => println!("Success!"),
             Err(e) => println!("Failed: {}", e),
         }

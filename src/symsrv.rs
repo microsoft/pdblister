@@ -160,7 +160,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
             }
         }),
     )
-    .buffer_unordered(16)
+    .buffer_unordered(64)
     .collect::<Vec<anyhow::Result<DownloadStatus>>>();
 
     // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
