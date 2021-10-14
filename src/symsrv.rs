@@ -20,9 +20,11 @@ enum DownloadStatus {
     DownloadedOk,
 }
 
-struct SymSrv {
-    server: String,
-    filepath: String,
+pub struct SymSrv {
+    /// The base URL for a symbol server, e.g: `https://msdl.microsoft.com/download/symbols`
+    pub server_url: String,
+    /// The base path for the local symbol cache, e.g: `C:\Symcache`
+    pub cache_path: String,
 }
 
 impl FromStr for SymSrv {
@@ -43,8 +45,8 @@ impl FromStr for SymSrv {
 
                     // Alright, the directive is of the proper form. Return the server and filepath.
                     return Ok(SymSrv {
-                        server: directives[2].to_string(),
-                        filepath: directives[1].to_string(),
+                        server_url: directives[2].to_string(),
+                        cache_path: directives[1].to_string(),
                     });
                 }
             }
@@ -58,30 +60,38 @@ impl FromStr for SymSrv {
     }
 }
 
-fn parse_servers(srvstr: String) -> anyhow::Result<Vec<SymSrv>> {
-    let server_list: Vec<&str> = srvstr.split(';').collect();
-    if server_list.is_empty() {
-        anyhow::bail!("Invalid server string");
-    }
+pub struct SymSrvList(Box<[SymSrv]>);
 
-    server_list
-        .into_iter()
-        .map(|symstr| symstr.parse::<SymSrv>())
-        .collect()
+impl FromStr for SymSrvList {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let server_list: Vec<&str> = s.split(';').collect();
+        if server_list.is_empty() {
+            anyhow::bail!("Invalid server string");
+        }
+
+        let vec = server_list
+            .into_iter()
+            .map(|symstr| symstr.parse::<SymSrv>())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(SymSrvList(vec.into_boxed_slice()))
+    }
 }
 
 pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
-    let srvs = parse_servers(srvstr)?;
-    if srvs.len() != 1 {
+    let srvs = SymSrvList::from_str(&srvstr)?;
+    if srvs.0.len() != 1 {
         anyhow::bail!("Only one symbol server/path supported at this time");
     }
 
-    let srv = &srvs[0];
+    let srv = &srvs.0[0];
 
     // Create the directory first, if it does not exist.
-    std::fs::create_dir_all(srv.filepath.clone()).context("Failed to create symbol directory")?;
+    std::fs::create_dir_all(srv.cache_path.clone()).context("Failed to create symbol directory")?;
 
     // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
     // The following code is based off of the above blog post.
@@ -119,18 +129,18 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
                 pb.inc(1);
 
                 // Create the directory tree.
-                tokio::fs::create_dir_all(format!("{}/{}/{}", srv.filepath, el[0], el[1])).await?;
+                tokio::fs::create_dir_all(format!("{}/{}/{}", srv.cache_path, el[0], el[1])).await?;
 
                 let pdbpath = format!("{}/{}/{}", el[0], el[1], el[0]);
 
                 // Check to see if the file already exists. If so, skip it.
-                if std::path::Path::new(&format!("{}/{}", srv.filepath, pdbpath)).exists() {
+                if std::path::Path::new(&format!("{}/{}", srv.cache_path, pdbpath)).exists() {
                     return Ok(DownloadStatus::AlreadyExists);
                 }
 
                 // Attempt to retrieve the file.
                 let mut req = client
-                    .get::<&str>(&format!("{}/{}", srv.server, pdbpath).to_string())
+                    .get::<&str>(&format!("{}/{}", srv.server_url, pdbpath).to_string())
                     .send()
                     .await?;
                 if req.status() != 200 {
@@ -147,7 +157,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
 
                 // Create the output file.
                 let mut file =
-                    tokio::fs::File::create(format!("{}/{}", srv.filepath, pdbpath).to_string())
+                    tokio::fs::File::create(format!("{}/{}", srv.cache_path, pdbpath).to_string())
                         .await?;
 
                 // N.B: We use this in lieu of tokio::io::copy so we can update the download progress.
