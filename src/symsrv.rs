@@ -95,7 +95,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
     pb.set_style(
         ProgressStyle::default_bar()
             .template("[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>10}/{len:10} ({eta}) {msg}")
-            .progress_chars("##-"),
+            .progress_chars("█▉▊▋▌▍▎▏  "),
     );
 
     // Set up our asynchronous code block.
@@ -149,7 +149,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
                             let dl_pb = m.add(ProgressBar::new(len));
                             dl_pb.set_style(ProgressStyle::default_bar()
                                 .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
-                                .progress_chars("##-")
+                                .progress_chars("█▉▊▋▌▍▎▏  ")
                                 .on_finish(ProgressFinish::AndClear)
                             );
 
