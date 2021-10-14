@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! This is a tiny project to be a quick alternative to symchk for generating
 //! manifests. This mimics symchk of the form `symchk /om manifest /r <path>`
 //! but only looks for MZ/PE files.
@@ -10,7 +12,7 @@
 //! has been generated use `symchk /im manifest /s <symbol path>`
 use anyhow::Context;
 use indicatif::ProgressStyle;
-// use rand::{thread_rng, Rng};
+use zerocopy::{AsBytes, FromBytes};
 
 use std::env;
 use std::io::SeekFrom;
@@ -106,7 +108,7 @@ fn recursive_listdir(
 }
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct MZHeader {
     signature: [u8; 2],
     last_page_bytes: u16,
@@ -126,7 +128,7 @@ struct MZHeader {
 }
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct PEHeader {
     signature: [u8; 4],
     machine: u16,
@@ -143,7 +145,7 @@ const IMAGE_FILE_MACHINE_IA64: u16 = 0x0200;
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct WindowsPEHeader32 {
     magic: u16,
     linker_major_version: u8,
@@ -178,7 +180,7 @@ struct WindowsPEHeader32 {
 }
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct WindowsPEHeader64 {
     magic: u16,
     linker_major_version: u8,
@@ -212,14 +214,14 @@ struct WindowsPEHeader64 {
 }
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct ImageDataDirectory {
     vaddr: u32,
     size: u32,
 }
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct ImageSectionHeader {
     name: [u8; 8],
     vsize: u32,
@@ -234,7 +236,7 @@ struct ImageSectionHeader {
 }
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct ImageDebugDirectory {
     characteristics: u32,
     timestamp: u32,
@@ -247,7 +249,7 @@ struct ImageDebugDirectory {
 }
 
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AsBytes, FromBytes)]
 struct CodeviewEntry {
     signature: [u8; 4], // RSDS
     guid_a: u32,
@@ -261,15 +263,10 @@ const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
 
 /// Read a structure from a file stream, directly interpreting the raw bytes
 /// of the file as T.
-///
-/// User must make sure the shape of the structure `T` is safe to use in this
-/// way, hence being unsafe.
-unsafe fn read_struct<T: Copy>(fd: &mut std::fs::File) -> io::Result<T> {
-    let mut ret: T = std::mem::zeroed();
-    fd.read_exact(std::slice::from_raw_parts_mut(
-        &mut ret as *mut _ as *mut u8,
-        std::mem::size_of_val(&ret),
-    ))?;
+fn read_struct<T: AsBytes + FromBytes>(fd: &mut std::fs::File) -> io::Result<T> {
+    let mut ret: T = T::new_zeroed();
+    fd.read_exact(ret.as_bytes_mut())?;
+
     Ok(ret)
 }
 
@@ -283,7 +280,7 @@ fn parse_pe(filename: &Path) -> anyhow::Result<(std::fs::File, MZHeader, PEHeade
     let mut fd = std::fs::File::open(filename)?;
 
     /* Check for an MZ header */
-    let mz_header: MZHeader = unsafe { read_struct(&mut fd)? };
+    let mz_header: MZHeader = read_struct(&mut fd)?;
     if &mz_header.signature != b"MZ" {
         anyhow::bail!("No MZ header present");
     }
@@ -294,7 +291,7 @@ fn parse_pe(filename: &Path) -> anyhow::Result<(std::fs::File, MZHeader, PEHeade
     }
 
     /* Check for a PE header */
-    let pe_header: PEHeader = unsafe { read_struct(&mut fd)? };
+    let pe_header: PEHeader = read_struct(&mut fd)?;
     if &pe_header.signature != b"PE\0\0" {
         anyhow::bail!("No PE header present");
     }
@@ -302,11 +299,11 @@ fn parse_pe(filename: &Path) -> anyhow::Result<(std::fs::File, MZHeader, PEHeade
     /* Grab the number of tables from the bitness-specific table */
     let (image_size, num_tables) = match pe_header.machine {
         IMAGE_FILE_MACHINE_I386 => {
-            let opthdr: WindowsPEHeader32 = unsafe { read_struct(&mut fd)? };
+            let opthdr: WindowsPEHeader32 = read_struct(&mut fd)?;
             (opthdr.size_of_image, opthdr.num_tables)
         }
         IMAGE_FILE_MACHINE_IA64 | IMAGE_FILE_MACHINE_AMD64 => {
-            let opthdr: WindowsPEHeader64 = unsafe { read_struct(&mut fd)? };
+            let opthdr: WindowsPEHeader64 = read_struct(&mut fd)?;
             (opthdr.size_of_image, opthdr.num_tables)
         }
         _ => anyhow::bail!("Unsupported PE machine type"),
@@ -355,7 +352,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
     /* Load all the data directories into a vector */
     let mut data_dirs = Vec::new();
     for _ in 0..num_tables {
-        let datadir: ImageDataDirectory = unsafe { read_struct(&mut fd)? };
+        let datadir: ImageDataDirectory = read_struct(&mut fd)?;
         data_dirs.push(datadir);
     }
 
@@ -387,7 +384,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
     /* Parse all the sections into a vector */
     let mut sections = Vec::new();
     for _ in 0..pe_header.num_sections {
-        let sechdr: ImageSectionHeader = unsafe { read_struct(&mut fd)? };
+        let sechdr: ImageSectionHeader = read_struct(&mut fd)?;
         sections.push(sechdr);
     }
 
@@ -396,13 +393,13 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
         let mut debug_data = None;
         for section in &sections {
             /* We use raw_data_size instead of vsize as we are not loading the
-            * file and only care about raw contents in the file.
-            */
+             * file and only care about raw contents in the file.
+             */
             let secrange = section.vaddr..section.vaddr + section.raw_data_size;
 
             /* Check if the entire debug table is contained in this sections
-            * virtual address range.
-            */
+             * virtual address range.
+             */
             if contains(&secrange, debug_table.vaddr)
                 && contains(&secrange, debug_table.vaddr + debug_table.size - 1)
             {
@@ -410,7 +407,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
                 break;
             }
         }
-    
+
         match debug_data {
             Some(d) => d as u64,
             None => anyhow::bail!("Unable to find debug data"),
@@ -424,7 +421,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
 
     /* Look through all debug table entries for codeview entries */
     for _ in 0..debug_table_ents {
-        let de: ImageDebugDirectory = unsafe { read_struct(&mut fd)? };
+        let de: ImageDebugDirectory = read_struct(&mut fd)?;
 
         if de.typ == IMAGE_DEBUG_TYPE_CODEVIEW {
             /* Seek to where the codeview entry should be */
@@ -433,7 +430,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
                 anyhow::bail!("Failed to seek to codeview entry");
             }
 
-            let cv: CodeviewEntry = unsafe { read_struct(&mut fd)? };
+            let cv: CodeviewEntry = read_struct(&mut fd)?;
             if &cv.signature != b"RSDS" {
                 anyhow::bail!("No RSDS signature present in codeview ent");
             }
@@ -495,7 +492,9 @@ async fn run() -> anyhow::Result<()> {
 
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}")
+                .template(
+                    "[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}",
+                )
                 .progress_chars("##-"),
         );
 

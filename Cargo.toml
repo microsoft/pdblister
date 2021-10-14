@@ -12,6 +12,7 @@ pin-utils = "0.1.0"
 rand = "0.3"
 reqwest = "0.11.0"
 thiserror = "1.0.25"
+zerocopy = "0.6.0"
 
 [dependencies.tokio]
 version = "1.7.1"
