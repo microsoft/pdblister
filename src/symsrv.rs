@@ -11,7 +11,6 @@ extern crate tokio;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 
-use anyhow::Context;
 use futures::stream::StreamExt;
 use tokio::io::AsyncWriteExt;
 
@@ -84,15 +83,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
     let srvs = SymSrvList::from_str(&srvstr)?;
-    if srvs.0.len() != 1 {
-        anyhow::bail!("Only one symbol server/path supported at this time");
-    }
-
-    let srv = &srvs.0[0];
-
-    // Create the directory first, if it does not exist.
-    std::fs::create_dir_all(srv.cache_path.clone()).context("Failed to create symbol directory")?;
-
+    
     // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
     // The following code is based off of the above blog post.
     let client = reqwest::Client::new();
@@ -115,12 +106,13 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
         files.into_iter().map(|line| {
             // Take explicit references to a few variables and move them into the async block.
             let client = &client;
-            let srv = &srv;
+            let srvs = &srvs;
             let pb = pb.clone();
             let m = &m;
 
             async move {
                 // Break out the filename into the separate components.
+                // name,UUID,version
                 let el: Vec<&str> = line.split(',').collect();
                 if el.len() != 3 {
                     panic!("Invalid manifest line encountered: \"{}\"", line);
@@ -128,49 +120,78 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
 
                 pb.inc(1);
 
-                // Create the directory tree.
-                tokio::fs::create_dir_all(format!("{}/{}/{}", srv.cache_path, el[0], el[1])).await?;
-
                 let pdbpath = format!("{}/{}/{}", el[0], el[1], el[0]);
 
-                // Check to see if the file already exists. If so, skip it.
-                if std::path::Path::new(&format!("{}/{}", srv.cache_path, pdbpath)).exists() {
-                    return Ok(DownloadStatus::AlreadyExists);
-                }
+                for srv in srvs.0.iter() {
+                    // Check to see if the file already exists. If so, skip it.
+                    if std::path::Path::new(&format!("{}/{}", srv.cache_path, pdbpath)).exists() {
+                        return Ok(DownloadStatus::AlreadyExists);
+                    }
 
-                // Attempt to retrieve the file.
-                let mut req = client
-                    .get::<&str>(&format!("{}/{}", srv.server_url, pdbpath).to_string())
-                    .send()
-                    .await?;
-                if req.status() != 200 {
-                    return Err(anyhow::anyhow!("File {} - Code {}", pdbpath, req.status()));
-                }
-
-                let dl_pb = m.add(ProgressBar::new(req.content_length().unwrap()));
-                dl_pb.set_style(ProgressStyle::default_bar()
-                    .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
-                    .progress_chars("##-")
-                    .on_finish(ProgressFinish::AndClear)
-                );
-                dl_pb.set_message(format!("{}/{}", el[1], el[0]));
-
-                // Create the output file.
-                let mut file =
-                    tokio::fs::File::create(format!("{}/{}", srv.cache_path, pdbpath).to_string())
+                    // Attempt to retrieve the file.
+                    let mut req = client
+                        .get::<&str>(&format!("{}/{}", srv.server_url, pdbpath).to_string())
+                        .send()
                         .await?;
+                    if !req.status().is_success() {
+                        if req.status() == 404 {
+                            // Attempt downloading from the next server.
+                            continue;
+                        }
 
-                // N.B: We use this in lieu of tokio::io::copy so we can update the download progress.
-                while let Some(chunk) = req.chunk().await? {
-                    dl_pb.inc(chunk.len() as u64);
-                    file.write(&chunk).await?;
+                        return Err(anyhow::anyhow!("File {} - Code {}", pdbpath, req.status()));
+                    }
+
+                    // N.B: If the server sends us a content-length header, use it to display a progress bar.
+                    // Otherwise, just display a spinner progress bar.
+                    let dl_pb = match req.content_length() {
+                        Some(len) => {
+                            let dl_pb = m.add(ProgressBar::new(len));
+                            dl_pb.set_style(ProgressStyle::default_bar()
+                                .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
+                                .progress_chars("##-")
+                                .on_finish(ProgressFinish::AndClear)
+                            );
+
+                            dl_pb
+                        },
+
+                        None => {
+                            let dl_pb = m.add(ProgressBar::new_spinner());
+                            dl_pb.set_style(ProgressStyle::default_bar()
+                                .template("[{elapsed_precise}] {spinner} {bytes_per_sec:>10} {wide_msg}")
+                                .on_finish(ProgressFinish::AndClear)
+                            );
+                            dl_pb.enable_steady_tick(5);
+
+                            dl_pb
+                        }
+                    };
+
+                    dl_pb.set_message(format!("{}/{}", el[1], el[0]));
+
+                    // Create the directory tree.
+                    tokio::fs::create_dir_all(format!("{}/{}/{}", srv.cache_path, el[0], el[1])).await?;
+
+                    // Create the output file.
+                    let mut file =
+                        tokio::fs::File::create(format!("{}/{}", srv.cache_path, pdbpath).to_string())
+                            .await?;
+
+                    // N.B: We use this in lieu of tokio::io::copy so we can update the download progress.
+                    while let Some(chunk) = req.chunk().await? {
+                        dl_pb.inc(chunk.len() as u64);
+                        file.write(&chunk).await?;
+                    }
+
+                    return Ok(DownloadStatus::DownloadedOk);
                 }
 
-                return Ok(DownloadStatus::DownloadedOk);
+                return Err(anyhow::anyhow!("File {} - Code 404", pdbpath));
             }
         }),
     )
-    .buffer_unordered(64)
+    .buffer_unordered(32)
     .collect::<Vec<anyhow::Result<DownloadStatus>>>();
 
     // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
@@ -185,8 +206,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
 
     // Collect output results.
     output.iter().for_each(|x| match x {
-        Err(res) => {
-            eprintln!("{}", res);
+        Err(_) => {
             err += 1;
         }
 
