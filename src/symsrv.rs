@@ -83,7 +83,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
     let srvs = SymSrvList::from_str(&srvstr)?;
-    
+
     // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
     // The following code is based off of the above blog post.
     let client = reqwest::Client::new();
@@ -120,17 +120,26 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
 
                 pb.inc(1);
 
+                // e.g: "ntkrnlmp.pdb\32C1A669D5FFEFD41091F636CFDB6E991\ntkrnlmp.pdb
                 let pdbpath = format!("{}/{}/{}", el[0], el[1], el[0]);
 
                 for srv in srvs.0.iter() {
+                    let file_name = format!("{}/{}", srv.cache_path, pdbpath);
+                    let file_url = format!("{}/{}", srv.server_url, pdbpath);
+
+                    // Attempt to remove any existing temporary files first.
+                    // Silently ignore failures since we don't care if this fails.
+                    let file_name_tmp = format!("{}.tmp", file_name);
+                    let _ = tokio::fs::remove_file(&file_name_tmp).await;
+
                     // Check to see if the file already exists. If so, skip it.
-                    if std::path::Path::new(&format!("{}/{}", srv.cache_path, pdbpath)).exists() {
+                    if std::path::Path::new(&file_name).exists() {
                         return Ok(DownloadStatus::AlreadyExists);
                     }
 
                     // Attempt to retrieve the file.
                     let mut req = client
-                        .get::<&str>(&format!("{}/{}", srv.server_url, pdbpath).to_string())
+                        .get::<&str>(&file_url)
                         .send()
                         .await?;
                     if !req.status().is_success() {
@@ -175,7 +184,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
 
                     // Create the output file.
                     let mut file =
-                        tokio::fs::File::create(format!("{}/{}", srv.cache_path, pdbpath).to_string())
+                        tokio::fs::File::create(&file_name_tmp)
                             .await?;
 
                     // N.B: We use this in lieu of tokio::io::copy so we can update the download progress.
@@ -183,6 +192,9 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
                         dl_pb.inc(chunk.len() as u64);
                         file.write(&chunk).await?;
                     }
+
+                    // Rename the temporary copy to the final name
+                    tokio::fs::rename(&file_name_tmp, file_name).await?;
 
                     return Ok(DownloadStatus::DownloadedOk);
                 }
