@@ -5,15 +5,15 @@ authors = ["Gogs <gogs@fake.local>"]
 edition = "2018"
 
 [dependencies]
-anyhow = "1.0.44"
-futures = "0.3.17"
+anyhow = "1.0.51"
+futures = "0.3.18"
 indicatif = { git = "https://github.com/mitsuhiko/indicatif.git", branch = "main" }
 pin-utils = "0.1.0"
 rand = "0.8.4"
-reqwest = "0.11.5"
+reqwest = "0.11.7"
 thiserror = "1.0.30"
-zerocopy = "0.6.0"
+zerocopy = "0.6.1"
 
 [dependencies.tokio]
-version = "1.12.0"
+version = "1.14.0"
 features = ["full"]
