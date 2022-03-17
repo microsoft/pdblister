@@ -9,13 +9,28 @@ extern crate indicatif;
 extern crate reqwest;
 extern crate tokio;
 
+use anyhow::Context;
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
+use thiserror::Error;
 
 use futures::stream::StreamExt;
 use tokio::io::AsyncWriteExt;
 
+#[derive(Error, Debug)]
+enum DownloadError {
+    /// Server returned a 404 error. Try the next one.
+    #[error("Server returned 404 not found")]
+    FileNotFound,
+
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug)]
 enum DownloadStatus {
+    /// The symbol file already exists in the filesystem.
     AlreadyExists,
+    /// The symbol file was successfully downloaded from the remote server.
     DownloadedOk,
 }
 
@@ -24,6 +39,33 @@ enum RemoteFileType {
     Url(reqwest::Response),
     /// Path on a network share
     Path(String),
+}
+
+#[derive(Debug, Clone)]
+struct ManifestEntry {
+    /// The PDB's name
+    name: String,
+    /// The hash plus age of the PDB
+    hash: String,
+    /// The version number (maybe?)
+    version: u32,
+}
+
+impl FromStr for ManifestEntry {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let elements = s.split(",").collect::<Vec<_>>();
+        if elements.len() != 3 {
+            anyhow::bail!("Invalid manifest line: \"{s}\"");
+        }
+
+        Ok(Self {
+            name: elements[0].to_string(),
+            hash: elements[1].to_string(),
+            version: u32::from_str(elements[2])?,
+        })
+    }
 }
 
 pub struct SymSrv {
@@ -86,6 +128,195 @@ impl FromStr for SymSrvList {
     }
 }
 
+/// Attempt to download a single manifest line from a single symbol server.
+async fn download_single(
+    client: &reqwest::Client,
+    srv: &SymSrv,
+    mp: Option<&MultiProgress>,
+    line: &ManifestEntry,
+) -> Result<DownloadStatus, DownloadError> {
+    // e.g: "ntkrnlmp.pdb/32C1A669D5FFEFD41091F636CFDB6E991"
+    let pdbpath = format!("{}/{}", line.name, line.hash);
+
+    // The name of the file on the local filesystem
+    let file_name = format!("{}/{}/{}", srv.cache_path, pdbpath, line.name);
+    // The path to the file's folder on the remote server
+    let file_folder_url = format!("{}/{}", srv.server_url, pdbpath);
+
+    // Attempt to remove any existing temporary files first.
+    // Silently ignore failures since we don't care if this fails.
+    let file_name_tmp = format!("{}.tmp", file_name);
+    let _ = tokio::fs::remove_file(&file_name_tmp).await;
+
+    // Check to see if the file already exists. If so, skip it.
+    if std::path::Path::new(&file_name).exists() {
+        return Ok(DownloadStatus::AlreadyExists);
+    }
+
+    // Attempt to retrieve the file.
+    let remote_file = {
+        let pdb_req = client
+            .get::<&str>(&format!("{}/{}", file_folder_url, line.name))
+            .send()
+            .await
+            .context("failed to request remote file")?;
+        if pdb_req.status().is_success() {
+            RemoteFileType::Url(pdb_req)
+        } else {
+            // Try a `file.ptr` redirection URL
+            let fileptr_req = client
+                .get::<&str>(&format!("{}/file.ptr", file_folder_url))
+                .send()
+                .await
+                .context("failed to request file.ptr")?;
+            if !fileptr_req.status().is_success() {
+                // Attempt another server instead
+                Err(DownloadError::FileNotFound)?;
+            }
+
+            let url = fileptr_req
+                .text()
+                .await
+                .context("failed to get file.ptr contents")?;
+
+            // FIXME: Would prefer not to unwrap the iterator results...
+            let mut url_iter = url.split(":");
+            let url_type = url_iter.next().unwrap();
+            let url = url_iter.next().unwrap();
+
+            match url_type {
+                "PATH" => RemoteFileType::Path(url.to_string()),
+
+                // Try another server.
+                "MSG" => return Err(DownloadError::FileNotFound),
+
+                typ => {
+                    unimplemented!(
+                        "Unknown symbol redirection pointer type {typ}!\n{url_type}:{url}"
+                    );
+                }
+            }
+        }
+    };
+
+    // Create the directory tree.
+    tokio::fs::create_dir_all(format!("{}/{}/{}", srv.cache_path, line.name, line.hash))
+        .await
+        .context("failed to create symbol directory tree")?;
+
+    match remote_file {
+        RemoteFileType::Url(mut res) => {
+            // N.B: If the server sends us a content-length header, use it to display a progress bar.
+            // Otherwise, just display a spinner progress bar.
+            let dl_pb = if let Some(m) = mp {
+                match res.content_length() {
+                    Some(len) => {
+                        let dl_pb = m.add(ProgressBar::new(len));
+                        dl_pb.set_style(ProgressStyle::default_bar()
+                                    .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
+                                    .progress_chars("█▉▊▋▌▍▎▏  ")
+                                    .on_finish(ProgressFinish::AndClear)
+                                );
+
+                        Some(dl_pb)
+                    }
+
+                    None => {
+                        let dl_pb = m.add(ProgressBar::new_spinner());
+                        dl_pb.set_style(
+                            ProgressStyle::default_bar()
+                                .template(
+                                    "[{elapsed_precise}] {spinner} {bytes_per_sec:>10} {wide_msg}",
+                                )
+                                .on_finish(ProgressFinish::AndClear),
+                        );
+                        dl_pb.enable_steady_tick(5);
+
+                        Some(dl_pb)
+                    }
+                }
+            } else {
+                None
+            };
+
+            if let Some(dl_pb) = &dl_pb {
+                dl_pb.set_message(format!("{}/{}", line.hash, line.name));
+            }
+
+            // Create the output file.
+            let mut file = tokio::fs::File::create(&file_name_tmp)
+                .await
+                .context("failed to create output pdb")?;
+
+            // N.B: We use this in lieu of tokio::io::copy so we can update the download progress.
+            while let Some(chunk) = res.chunk().await.context("failed to download pdb chunk")? {
+                if let Some(dl_pb) = &dl_pb {
+                    dl_pb.inc(chunk.len() as u64);
+                }
+
+                file.write(&chunk)
+                    .await
+                    .context("failed to write pdb chunk")?;
+            }
+
+            // Rename the temporary copy to the final name
+            tokio::fs::rename(&file_name_tmp, file_name)
+                .await
+                .context("failed to rename pdb")?;
+
+            Ok(DownloadStatus::DownloadedOk)
+        }
+
+        RemoteFileType::Path(path) => {
+            // Attempt to open the file via the filesystem.
+            let mut remote_file = tokio::fs::File::open(path)
+                .await
+                .context("failed to open remote file")?;
+            let metadata = remote_file
+                .metadata()
+                .await
+                .context("failed to fetch remote metadata")?;
+
+            let dl_pb = if let Some(m) = mp {
+                let dl_pb = m.add(ProgressBar::new(metadata.len()));
+                dl_pb.set_style(ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
+                    .progress_chars("█▉▊▋▌▍▎▏  ")
+                    .on_finish(ProgressFinish::AndClear)
+                );
+
+                dl_pb.set_message(format!("{}/{}", line.hash, line.name));
+
+                Some(dl_pb)
+            } else {
+                None
+            };
+
+            // Create the output file.
+            let mut file = tokio::fs::File::create(&file_name_tmp)
+                .await
+                .context("failed to create output pdb")?;
+
+            if let Some(dl_pb) = dl_pb {
+                tokio::io::copy(&mut dl_pb.wrap_async_read(remote_file), &mut file)
+                    .await
+                    .context("failed to copy pdb")?;
+            } else {
+                tokio::io::copy(&mut remote_file, &mut file)
+                    .await
+                    .context("failed to copy pdb")?;
+            }
+
+            // Rename the temporary copy to the final name
+            tokio::fs::rename(&file_name_tmp, file_name)
+                .await
+                .context("failed to rename pdb")?;
+
+            Ok(DownloadStatus::DownloadedOk)
+        }
+    }
+}
+
 pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
@@ -118,156 +349,27 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
             let m = &m;
 
             async move {
-                // Break out the filename into the separate components.
-                // name,UUID,version
-                let el: Vec<&str> = line.split(',').collect();
-                if el.len() != 3 {
-                    panic!("Invalid manifest line encountered: \"{}\"", line);
-                }
-
                 pb.inc(1);
 
-                // e.g: "ntkrnlmp.pdb/32C1A669D5FFEFD41091F636CFDB6E991"
-                let pdbpath = format!("{}/{}", el[0], el[1]);
-
                 for srv in srvs.0.iter() {
-                    // The name of the file on the local filesystem
-                    let file_name = format!("{}/{}/{}", srv.cache_path, pdbpath, el[0]);
-                    // The path to the file's folder on the remote server
-                    let file_folder_url = format!("{}/{}", srv.server_url, pdbpath);
+                    let e = ManifestEntry::from_str(&line).unwrap();
 
-                    // Attempt to remove any existing temporary files first.
-                    // Silently ignore failures since we don't care if this fails.
-                    let file_name_tmp = format!("{}.tmp", file_name);
-                    let _ = tokio::fs::remove_file(&file_name_tmp).await;
-
-                    // Check to see if the file already exists. If so, skip it.
-                    if std::path::Path::new(&file_name).exists() {
-                        return Ok(DownloadStatus::AlreadyExists);
-                    }
-
-                    // Attempt to retrieve the file.
-                    let remote_file = {
-                        let pdb_req = client
-                            .get::<&str>(&format!("{}/{}", file_folder_url, el[0]))
-                            .send()
-                            .await?;
-                        if pdb_req.status().is_success() {
-                            RemoteFileType::Url(pdb_req)
-                        } else {
-                            // Try a `file.ptr` redirection URL
-                            let fileptr_req = client.get::<&str>(&format!("{}/file.ptr", file_folder_url)).send().await?;
-                            if !fileptr_req.status().is_success() {
-                                // Attempt another server instead
-                                continue;
-                            }
-                            
-                            let url = fileptr_req.text().await?;
-
-                            // FIXME: Would prefer not to unwrap the iterator results...
-                            let mut url_iter = url.split(":");
-                            let url_type = url_iter.next().unwrap();
-                            let url = url_iter.next().unwrap();
-
-                            match url_type {
-                                "PATH" => {
-                                    RemoteFileType::Path(url.to_string())
-                                }
-
-                                "MSG" => {
-                                    // Try another server.
-                                    continue;
-                                }
-
-                                typ => {
-                                    unimplemented!("Unknown symbol redirection pointer type {typ}!\n{url_type}:{url}");
-                                }
-                            }
-                        }
-                    };
-
-                    // Create the directory tree.
-                    tokio::fs::create_dir_all(format!("{}/{}/{}", srv.cache_path, el[0], el[1])).await?;
-
-                    match remote_file {
-                        RemoteFileType::Url(mut res) => {
-                            // N.B: If the server sends us a content-length header, use it to display a progress bar.
-                            // Otherwise, just display a spinner progress bar.
-                            let dl_pb = match res.content_length() {
-                                Some(len) => {
-                                    let dl_pb = m.add(ProgressBar::new(len));
-                                    dl_pb.set_style(ProgressStyle::default_bar()
-                                        .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
-                                        .progress_chars("█▉▊▋▌▍▎▏  ")
-                                        .on_finish(ProgressFinish::AndClear)
-                                    );
-
-                                    dl_pb
-                                },
-
-                                None => {
-                                    let dl_pb = m.add(ProgressBar::new_spinner());
-                                    dl_pb.set_style(ProgressStyle::default_bar()
-                                        .template("[{elapsed_precise}] {spinner} {bytes_per_sec:>10} {wide_msg}")
-                                        .on_finish(ProgressFinish::AndClear)
-                                    );
-                                    dl_pb.enable_steady_tick(5);
-
-                                    dl_pb
-                                }
-                            };
-
-                            dl_pb.set_message(format!("{}/{}", el[1], el[0]));
-
-                            // Create the output file.
-                            let mut file =
-                                tokio::fs::File::create(&file_name_tmp)
-                                    .await?;
-
-                            // N.B: We use this in lieu of tokio::io::copy so we can update the download progress.
-                            while let Some(chunk) = res.chunk().await? {
-                                dl_pb.inc(chunk.len() as u64);
-                                file.write(&chunk).await?;
-                            }
-
-                            // Rename the temporary copy to the final name
-                            tokio::fs::rename(&file_name_tmp, file_name).await?;
-
-                            return Ok(DownloadStatus::DownloadedOk);
-                        }
-
-                        RemoteFileType::Path(path) => {
-                            // Attempt to open the file via the filesystem.
-                            let remote_file = tokio::fs::File::open(path).await?;
-                            let metadata = remote_file.metadata().await?;
-
-                            let dl_pb = m.add(ProgressBar::new(metadata.len()));
-                            dl_pb.set_style(ProgressStyle::default_bar()
-                                .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
-                                .progress_chars("█▉▊▋▌▍▎▏  ")
-                                .on_finish(ProgressFinish::AndClear)
-                            );
-
-                            dl_pb.set_message(format!("{}/{}", el[1], el[0]));
-
-                            // Create the output file.
-                            let mut file =
-                                tokio::fs::File::create(&file_name_tmp).await?;
-
-                            tokio::io::copy(&mut dl_pb.wrap_async_read(remote_file), &mut file).await?;
-
-                            // Rename the temporary copy to the final name
-                            tokio::fs::rename(&file_name_tmp, file_name).await?;
-                        }
+                    match download_single(client, srv, Some(m), &e).await {
+                        Ok(r) => return Ok(r),
+                        Err(e) => match e {
+                            // Try next server.
+                            DownloadError::FileNotFound => continue,
+                            e => return Err(e),
+                        },
                     }
                 }
 
-                return Err(anyhow::anyhow!("File {} - Code 404", pdbpath));
+                Err(DownloadError::FileNotFound)
             }
         }),
     )
     .buffer_unordered(32)
-    .collect::<Vec<anyhow::Result<DownloadStatus>>>();
+    .collect::<Vec<Result<DownloadStatus, DownloadError>>>();
 
     // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
     // That way we don't exhaust system resources in the networking stack or filesystem.
