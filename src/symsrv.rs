@@ -410,6 +410,23 @@ fn connect_oauth2_pkce(
         .build()?)
 }
 
+/// Connect to Azure and authenticate requests using a PAT.
+///
+/// Reference: https://docs.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate?view=azure-devops&tabs=Windows
+fn connect_pat(token: &str) -> anyhow::Result<reqwest::Client> {
+    use reqwest::header;
+
+    let b64 = base64::encode(token);
+
+    let mut headers = header::HeaderMap::new();
+    let mut auth_value = header::HeaderValue::from_str(&format!("Basic {b64}"))?;
+    headers.insert(header::AUTHORIZATION, auth_value);
+
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?)
+}
+
 fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
     // Determine if the URL is a known URL that requires OAuth2 authorization.
     use url::{Host, Url};
@@ -421,12 +438,9 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
                 // Azure DevOps
                 // TODO: Ugh, fixme. Need to match domain name only.
                 "microsoft.artifacts.visualstudio.com" => {
-                    const APP_ID: &'static str = "69E17AB1-A13C-4471-BCE5-CD9C4330E055";
-                    const AUTH_URL: &'static str =
-                        "https://app.vssps.visualstudio.com/oauth2/authorize";
-                    const TOKEN_URL: &'static str = "https://app.vssps.visualstudio.com/oauth2/token?client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer";
+                    let pat = std::env::var("AZ_PAT").context("var AZ_PAT is not defined!")?;
 
-                    Ok(connect_oauth2_pkce(APP_ID, AUTH_URL, TOKEN_URL)?)
+                    Ok(connect_pat(&pat)?)
                 }
 
                 _ => {

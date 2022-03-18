@@ -16,6 +16,7 @@ zerocopy = "0.6.1"
 oauth2 = "4.1.0"
 url = "2.2.2"
 micro_http_server = "0.0.3"
+base64 = "0.13.0"
 
 [dependencies.tokio]
 version = "1.14.0"
