@@ -6,12 +6,14 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.51"
+base64 = "0.13.0"
 futures = "0.3.18"
 indicatif = { git = "https://github.com/mitsuhiko/indicatif.git", branch = "main", features = ["tokio"] }
 pin-utils = "0.1.0"
 rand = "0.8.4"
 reqwest = "0.11.7"
 thiserror = "1.0.30"
+url = "2.2.2"
 zerocopy = "0.6.1"
 
 [dependencies.tokio]

@@ -317,15 +317,66 @@ async fn download_single(
     }
 }
 
+/// Connect to Azure and authenticate requests using a PAT.
+///
+/// Reference: https://docs.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate?view=azure-devops&tabs=Windows
+fn connect_pat(token: &str) -> anyhow::Result<reqwest::Client> {
+    use reqwest::header;
+
+    let b64 = base64::encode(token);
+
+    let mut headers = header::HeaderMap::new();
+    let auth_value = header::HeaderValue::from_str(&format!("Basic {b64}"))?;
+    headers.insert(header::AUTHORIZATION, auth_value);
+
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?)
+}
+
+fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
+    // Determine if the URL is a known URL that requires OAuth2 authorization.
+    use url::{Host, Url};
+
+    let url = Url::parse(&srv.server_url)?;
+    match url.host() {
+        Some(Host::Domain(d)) => {
+            match d {
+                // Azure DevOps
+                // TODO: Ugh, fixme. Need to match domain name only.
+                "microsoft.artifacts.visualstudio.com" => {
+                    let pat = std::env::var("AZ_PAT").context("var AZ_PAT is not defined!")?;
+
+                    Ok(connect_pat(&pat)?)
+                }
+
+                _ => {
+                    // Unknown URL; return a fresh client.
+                    Ok(reqwest::Client::new())
+                }
+            }
+        }
+        Some(Host::Ipv4(_) | Host::Ipv6(_)) | None => {
+            // Just return a new client.
+            Ok(reqwest::Client::new())
+        }
+    }
+}
+
 pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
     let srvs = SymSrvList::from_str(&srvstr)?;
 
+    // Couple the servers with a reqwest client.
+    let srvs = srvs
+        .0
+        .into_iter()
+        .map(|s| (s.clone(), connect_server(s).unwrap()))
+        .collect::<Box<[_]>>();
+
     // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
     // The following code is based off of the above blog post.
-    let client = reqwest::Client::new();
-
     let m = MultiProgress::new();
 
     // Create a progress bar.
@@ -344,7 +395,6 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
         // into a Vec<Result<T, E>>
         files.into_iter().map(|line| {
             // Take explicit references to a few variables and move them into the async block.
-            let client = &client;
             let srvs = &srvs;
             let pb = pb.clone();
             let m = &m;
@@ -352,7 +402,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
             async move {
                 pb.inc(1);
 
-                for srv in srvs.0.iter() {
+                for (srv, client) in srvs.iter() {
                     let e = ManifestEntry::from_str(&line).unwrap();
 
                     match download_single(client, srv, Some(m), &e).await {
