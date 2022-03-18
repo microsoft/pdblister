@@ -317,15 +317,145 @@ async fn download_single(
     }
 }
 
+fn wait_oauth2_auth() -> anyhow::Result<oauth2::AuthorizationCode> {
+    use micro_http_server::{Client, MicroHTTP};
+    use std::time::Duration;
+    use url::Url;
+
+    let server = MicroHTTP::new("127.0.0.1:40169")?;
+    loop {
+        let client = server.next_client().unwrap();
+        if let Some(client) = client {
+            let req = client.request().as_ref().unwrap();
+            let req = Url::parse(req)?;
+
+            // Check for ?code parameter
+            for (key, value) in req.query_pairs() {
+                if key == "code" {
+                    return Ok(oauth2::AuthorizationCode::new(value.to_string()));
+                }
+            }
+
+            return Err(anyhow::bail!(
+                "Received OAuth2 response, but no code provided?"
+            ));
+        } else {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+}
+
+fn connect_oauth2_pkce(
+    app_id: &str,
+    auth_url: &str,
+    token_url: &str,
+) -> anyhow::Result<reqwest::Client> {
+    use oauth2::basic::BasicClient;
+    use oauth2::reqwest::http_client;
+    use oauth2::{
+        AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
+        RedirectUrl, ResponseType, Scope, TokenResponse, TokenUrl,
+    };
+    use url::Url;
+
+    // Create an OAuth2 client by specifying the client ID, client secret, authorization URL and
+    // token URL.
+    let client = BasicClient::new(
+        ClientId::new(app_id.to_string()),
+        None,
+        AuthUrl::new(auth_url.to_string())?,
+        Some(TokenUrl::new(token_url.to_string())?),
+    );
+
+    // Generate a PKCE challenge.
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+
+    // Generate the full authorization URL.
+    let (auth_url, csrf_token) = client
+        .authorize_url(CsrfToken::new_random)
+        .set_response_type(&ResponseType::new("Assertion".to_string()))
+        // Set the desired scopes.
+        .add_scope(Scope::new("vso.symbols".to_string()))
+        // Set the PKCE code challenge.
+        .set_pkce_challenge(pkce_challenge)
+        .url();
+
+    // Direct the user to the login URL.
+    println!("Browse to: {auth_url}");
+
+    let code = wait_oauth2_auth()?;
+
+    // Once the user has been redirected to the redirect URL, you'll have access to the
+    // authorization code. For security reasons, your code should verify that the `state`
+    // parameter returned by the server matches `csrf_state`.
+
+    // Now you can trade it for an access token.
+    let token_result = client
+        .exchange_code(code)
+        // Set the PKCE code verifier.
+        .set_pkce_verifier(pkce_verifier)
+        .request(http_client)?;
+
+    use reqwest::header;
+
+    let mut headers = header::HeaderMap::new();
+    let mut auth_value =
+        header::HeaderValue::from_str(&format!("Bearer {}", token_result.access_token().secret()))
+            .unwrap();
+    auth_value.set_sensitive(true);
+    headers.insert(header::AUTHORIZATION, auth_value);
+
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?)
+}
+
+fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
+    // Determine if the URL is a known URL that requires OAuth2 authorization.
+    use url::{Host, Url};
+
+    let url = Url::parse(&srv.server_url)?;
+    match url.host().unwrap() {
+        Host::Domain(d) => {
+            match d {
+                // Azure DevOps
+                // TODO: Ugh, fixme. Need to match domain name only.
+                "microsoft.artifacts.visualstudio.com" => {
+                    const APP_ID: &'static str = "69E17AB1-A13C-4471-BCE5-CD9C4330E055";
+                    const AUTH_URL: &'static str =
+                        "https://app.vssps.visualstudio.com/oauth2/authorize";
+                    const TOKEN_URL: &'static str = "https://app.vssps.visualstudio.com/oauth2/token?client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+                    Ok(connect_oauth2_pkce(APP_ID, AUTH_URL, TOKEN_URL)?)
+                }
+
+                _ => {
+                    // Unknown URL; return a fresh client.
+                    Ok(reqwest::Client::new())
+                }
+            }
+        }
+        Host::Ipv4(_) | Host::Ipv6(_) => {
+            // Just return a new client.
+            Ok(reqwest::Client::new())
+        }
+    }
+}
+
 pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
     let srvs = SymSrvList::from_str(&srvstr)?;
 
+    // Couple the servers with a reqwest client.
+    let srvs = srvs
+        .0
+        .into_iter()
+        .map(|s| (s.clone(), connect_server(s).unwrap()))
+        .collect::<Box<[_]>>();
+
     // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
     // The following code is based off of the above blog post.
-    let client = reqwest::Client::new();
-
     let m = MultiProgress::new();
 
     // Create a progress bar.
@@ -344,7 +474,6 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
         // into a Vec<Result<T, E>>
         files.into_iter().map(|line| {
             // Take explicit references to a few variables and move them into the async block.
-            let client = &client;
             let srvs = &srvs;
             let pb = pb.clone();
             let m = &m;
@@ -352,7 +481,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
             async move {
                 pb.inc(1);
 
-                for srv in srvs.0.iter() {
+                for (srv, client) in srvs.iter() {
                     let e = ManifestEntry::from_str(&line).unwrap();
 
                     match download_single(client, srv, Some(m), &e).await {
