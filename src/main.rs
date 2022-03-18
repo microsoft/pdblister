@@ -495,6 +495,7 @@ async fn run() -> anyhow::Result<()> {
                 .template(
                     "[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}",
                 )
+                .unwrap()
                 .progress_chars("##-"),
         );
 

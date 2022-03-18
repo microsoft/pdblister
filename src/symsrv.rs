@@ -10,7 +10,7 @@ extern crate reqwest;
 extern crate tokio;
 
 use anyhow::Context;
-use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use thiserror::Error;
 
 use futures::stream::StreamExt;
@@ -214,8 +214,8 @@ async fn download_single(
                         let dl_pb = m.add(ProgressBar::new(len));
                         dl_pb.set_style(ProgressStyle::default_bar()
                                     .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
+                                    .unwrap()
                                     .progress_chars("█▉▊▋▌▍▎▏  ")
-                                    .on_finish(ProgressFinish::AndClear)
                                 );
 
                         Some(dl_pb)
@@ -228,9 +228,9 @@ async fn download_single(
                                 .template(
                                     "[{elapsed_precise}] {spinner} {bytes_per_sec:>10} {wide_msg}",
                                 )
-                                .on_finish(ProgressFinish::AndClear),
+                                .unwrap(),
                         );
-                        dl_pb.enable_steady_tick(5);
+                        dl_pb.enable_steady_tick(std::time::Duration::from_millis(5));
 
                         Some(dl_pb)
                     }
@@ -281,8 +281,8 @@ async fn download_single(
                 let dl_pb = m.add(ProgressBar::new(metadata.len()));
                 dl_pb.set_style(ProgressStyle::default_bar()
                     .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
+                    .unwrap()
                     .progress_chars("█▉▊▋▌▍▎▏  ")
-                    .on_finish(ProgressFinish::AndClear)
                 );
 
                 dl_pb.set_message(format!("{}/{}", line.hash, line.name));
@@ -333,6 +333,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
     pb.set_style(
         ProgressStyle::default_bar()
             .template("[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>10}/{len:10} ({eta}) {msg}")
+            .unwrap()
             .progress_chars("█▉▊▋▌▍▎▏  "),
     );
 
