@@ -45,8 +45,8 @@ impl ToString for SymFileInfo {
     fn to_string(&self) -> String {
         // The middle component of the resource's path on a symbol.
         match self {
-            SymFileInfo::Exe(i) => format!("{:08x}{:x}", i.timestamp, i.size),
-            SymFileInfo::Pdb(i) => format!("{:032X}{:x}", i.guid, i.age),
+            SymFileInfo::Exe(i) => i.to_string(),
+            SymFileInfo::Pdb(i) => i.to_string(),
         }
     }
 }
@@ -58,6 +58,12 @@ pub struct ExeInfo {
     pub size: u32,
 }
 
+impl ToString for ExeInfo {
+    fn to_string(&self) -> String {
+        format!("{:08x}{:x}", self.timestamp, self.size)
+    }
+}
+
 /// PDB file information relevant to a symbol server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdbInfo {
@@ -65,8 +71,14 @@ pub struct PdbInfo {
     pub age: u32,
 }
 
+impl ToString for PdbInfo {
+    fn to_string(&self) -> String {
+        format!("{:032X}{:x}", self.guid, self.age)
+    }
+}
+
 #[derive(Error, Debug)]
-enum DownloadError {
+pub enum DownloadError {
     /// Server returned a 404 error. Try the next one.
     #[error("Server returned 404 not found")]
     FileNotFound,
@@ -186,7 +198,7 @@ async fn download_single(
     mp: Option<&MultiProgress>,
     name: &str,
     hash: &str,
-) -> Result<DownloadStatus, DownloadError> {
+) -> Result<(DownloadStatus, PathBuf), DownloadError> {
     // e.g: "ntkrnlmp.pdb/32C1A669D5FFEFD41091F636CFDB6E991"
     let file_rel_folder = format!("{}/{}", name, hash);
 
@@ -202,7 +214,7 @@ async fn download_single(
 
     // Check to see if the file already exists. If so, skip it.
     if std::path::Path::new(&file_name).exists() {
-        return Ok(DownloadStatus::AlreadyExists);
+        return Ok((DownloadStatus::AlreadyExists, file_name.into()));
     }
 
     // Attempt to retrieve the file.
@@ -302,11 +314,11 @@ async fn download_single(
             }
 
             // Rename the temporary copy to the final name
-            tokio::fs::rename(&file_name_tmp, file_name)
+            tokio::fs::rename(&file_name_tmp, &file_name)
                 .await
                 .context("failed to rename pdb")?;
 
-            Ok(DownloadStatus::DownloadedOk)
+            Ok((DownloadStatus::DownloadedOk, file_name.into()))
         }
 
         RemoteFileType::Path(path) => {
@@ -346,11 +358,11 @@ async fn download_single(
             }
 
             // Rename the temporary copy to the final name
-            tokio::fs::rename(&file_name_tmp, file_name)
+            tokio::fs::rename(&file_name_tmp, &file_name)
                 .await
                 .context("failed to rename pdb")?;
 
-            Ok(DownloadStatus::DownloadedOk)
+            Ok((DownloadStatus::DownloadedOk, file_name.into()))
         }
     }
 }
@@ -410,8 +422,32 @@ pub async fn download_file(
     srvstr: String,
     name: &str,
     info: &SymFileInfo,
-) -> anyhow::Result<PathBuf> {
-    todo!()
+) -> Result<PathBuf, DownloadError> {
+    // First, parse the server string to figure out where we're supposed to fetch symbols from,
+    // and where to.
+    let srvs = SymSrvList::from_str(&srvstr)?;
+
+    // Couple the servers with a reqwest client.
+    let srvs = srvs
+        .0
+        .into_iter()
+        .map(|s| (s.clone(), connect_server(s).unwrap()))
+        .collect::<Box<[_]>>();
+
+    for (srv, client) in srvs.iter() {
+        let hash = info.to_string();
+
+        match download_single(client, srv, None, name, &hash).await {
+            Ok((status, path)) => return Ok(path),
+            Err(e) => match e {
+                // Try another server.
+                DownloadError::FileNotFound => continue,
+                e => return Err(e),
+            },
+        }
+    }
+
+    Err(DownloadError::FileNotFound)
 }
 
 pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
@@ -471,7 +507,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
         }),
     )
     .buffer_unordered(32)
-    .collect::<Vec<Result<DownloadStatus, DownloadError>>>();
+    .collect::<Vec<Result<(DownloadStatus, PathBuf), DownloadError>>>();
 
     // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
     // That way we don't exhaust system resources in the networking stack or filesystem.
@@ -489,7 +525,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
             err += 1;
         }
 
-        Ok(s) => match s {
+        Ok((s, _)) => match s {
             DownloadStatus::AlreadyExists => ok_exists += 1,
             DownloadStatus::DownloadedOk => ok += 1,
         },
