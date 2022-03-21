@@ -346,6 +346,9 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
                 // TODO: Ugh, fixme. Need to match domain name only.
                 "microsoft.artifacts.visualstudio.com" => {
                     let pat = std::env::var("AZ_PAT").context("var AZ_PAT is not defined!")?;
+                    if url.scheme() != "https" {
+                        anyhow::bail!("This URL must be over https!");
+                    }
 
                     Ok(connect_pat(&pat)?)
                 }
