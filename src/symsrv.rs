@@ -2,7 +2,7 @@
 #![warn(clippy::all)]
 #![allow(clippy::needless_return)]
 
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 extern crate futures;
 extern crate indicatif;
@@ -15,6 +15,55 @@ use thiserror::Error;
 
 use futures::stream::StreamExt;
 use tokio::io::AsyncWriteExt;
+
+mod style {
+    use indicatif::ProgressStyle;
+
+    pub fn bar() -> ProgressStyle {
+        ProgressStyle::default_bar()
+            .template(
+                "[{elapsed_precise}] {bar:.cyan/blue} {bytes:>12}/{total_bytes:12} {wide_msg}",
+            )
+            .unwrap()
+            .progress_chars("█▉▊▋▌▍▎▏  ")
+    }
+
+    pub fn spinner() -> ProgressStyle {
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {spinner} {bytes_per_sec:>10} {wide_msg}")
+            .unwrap()
+    }
+}
+
+/// Information about a symbol file resource.
+pub enum SymFileInfo {
+    Exe(ExeInfo),
+    Pdb(PdbInfo),
+}
+
+impl ToString for SymFileInfo {
+    fn to_string(&self) -> String {
+        // The middle component of the resource's path on a symbol.
+        match self {
+            SymFileInfo::Exe(i) => format!("{:08x}{:x}", i.timestamp, i.size),
+            SymFileInfo::Pdb(i) => format!("{:032X}{:x}", i.guid, i.age),
+        }
+    }
+}
+
+/// Executable file information relevant to a symbol server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExeInfo {
+    pub timestamp: u32,
+    pub size: u32,
+}
+
+/// PDB file information relevant to a symbol server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PdbInfo {
+    pub guid: u128,
+    pub age: u32,
+}
 
 #[derive(Error, Debug)]
 enum DownloadError {
@@ -68,6 +117,7 @@ impl FromStr for ManifestEntry {
     }
 }
 
+/// A symbol server, defined by the user with the syntax `SRV*<cache_path>*<server_url>`.
 pub struct SymSrv {
     /// The base URL for a symbol server, e.g: `https://msdl.microsoft.com/download/symbols`
     pub server_url: String,
@@ -108,7 +158,8 @@ impl FromStr for SymSrv {
     }
 }
 
-pub struct SymSrvList(Box<[SymSrv]>);
+/// A list of symbol servers, defined by the user with a semicolon-separated list.
+pub struct SymSrvList(pub Box<[SymSrv]>);
 
 impl FromStr for SymSrvList {
     type Err = anyhow::Error;
@@ -128,20 +179,21 @@ impl FromStr for SymSrvList {
     }
 }
 
-/// Attempt to download a single manifest line from a single symbol server.
+/// Attempt to download a single resource from a single symbol server.
 async fn download_single(
     client: &reqwest::Client,
     srv: &SymSrv,
     mp: Option<&MultiProgress>,
-    line: &ManifestEntry,
+    name: &str,
+    hash: &str,
 ) -> Result<DownloadStatus, DownloadError> {
     // e.g: "ntkrnlmp.pdb/32C1A669D5FFEFD41091F636CFDB6E991"
-    let pdbpath = format!("{}/{}", line.name, line.hash);
+    let file_rel_folder = format!("{}/{}", name, hash);
 
     // The name of the file on the local filesystem
-    let file_name = format!("{}/{}/{}", srv.cache_path, pdbpath, line.name);
+    let file_name = format!("{}/{}/{}", srv.cache_path, file_rel_folder, name);
     // The path to the file's folder on the remote server
-    let file_folder_url = format!("{}/{}", srv.server_url, pdbpath);
+    let file_folder_url = format!("{}/{}", srv.server_url, file_rel_folder);
 
     // Attempt to remove any existing temporary files first.
     // Silently ignore failures since we don't care if this fails.
@@ -156,7 +208,7 @@ async fn download_single(
     // Attempt to retrieve the file.
     let remote_file = {
         let pdb_req = client
-            .get::<&str>(&format!("{}/{}", file_folder_url, line.name))
+            .get::<&str>(&format!("{}/{}", file_folder_url, name))
             .send()
             .await
             .context("failed to request remote file")?;
@@ -200,7 +252,7 @@ async fn download_single(
     };
 
     // Create the directory tree.
-    tokio::fs::create_dir_all(format!("{}/{}/{}", srv.cache_path, line.name, line.hash))
+    tokio::fs::create_dir_all(format!("{}/{}", srv.cache_path, file_rel_folder))
         .await
         .context("failed to create symbol directory tree")?;
 
@@ -212,24 +264,14 @@ async fn download_single(
                 match res.content_length() {
                     Some(len) => {
                         let dl_pb = m.add(ProgressBar::new(len));
-                        dl_pb.set_style(ProgressStyle::default_bar()
-                                    .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
-                                    .unwrap()
-                                    .progress_chars("█▉▊▋▌▍▎▏  ")
-                                );
+                        dl_pb.set_style(style::bar());
 
                         Some(dl_pb)
                     }
 
                     None => {
                         let dl_pb = m.add(ProgressBar::new_spinner());
-                        dl_pb.set_style(
-                            ProgressStyle::default_bar()
-                                .template(
-                                    "[{elapsed_precise}] {spinner} {bytes_per_sec:>10} {wide_msg}",
-                                )
-                                .unwrap(),
-                        );
+                        dl_pb.set_style(style::spinner());
                         dl_pb.enable_steady_tick(std::time::Duration::from_millis(5));
 
                         Some(dl_pb)
@@ -240,7 +282,7 @@ async fn download_single(
             };
 
             if let Some(dl_pb) = &dl_pb {
-                dl_pb.set_message(format!("{}/{}", line.hash, line.name));
+                dl_pb.set_message(format!("{}/{}", hash, name));
             }
 
             // Create the output file.
@@ -279,13 +321,9 @@ async fn download_single(
 
             let dl_pb = if let Some(m) = mp {
                 let dl_pb = m.add(ProgressBar::new(metadata.len()));
-                dl_pb.set_style(ProgressStyle::default_bar()
-                    .template("[{elapsed_precise}] {bar:.cyan/blue} {bytes:>10}/{total_bytes:10} {wide_msg}")
-                    .unwrap()
-                    .progress_chars("█▉▊▋▌▍▎▏  ")
-                );
+                dl_pb.set_style(style::bar());
 
-                dl_pb.set_message(format!("{}/{}", line.hash, line.name));
+                dl_pb.set_message(format!("{}/{}", hash, name));
 
                 Some(dl_pb)
             } else {
@@ -366,6 +404,16 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
     }
 }
 
+/// Download and cache a single file in the symbol store described by `srvstr`,
+/// and then return its path.
+pub async fn download_file(
+    srvstr: String,
+    name: &str,
+    info: &SymFileInfo,
+) -> anyhow::Result<PathBuf> {
+    todo!()
+}
+
 pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
     // First, parse the server string to figure out where we're supposed to fetch symbols from,
     // and where to.
@@ -408,7 +456,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
                 for (srv, client) in srvs.iter() {
                     let e = ManifestEntry::from_str(&line).unwrap();
 
-                    match download_single(client, srv, Some(m), &e).await {
+                    match download_single(client, srv, Some(m), &e.name, &e.hash).await {
                         Ok(r) => return Ok(r),
                         Err(e) => match e {
                             // Try next server.
