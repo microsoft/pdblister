@@ -39,6 +39,8 @@ mod style {
 pub enum SymFileInfo {
     Exe(ExeInfo),
     Pdb(PdbInfo),
+    /// A raw symsrv-compatible hash.
+    RawHash(String),
 }
 
 impl ToString for SymFileInfo {
@@ -47,6 +49,7 @@ impl ToString for SymFileInfo {
         match self {
             SymFileInfo::Exe(i) => i.to_string(),
             SymFileInfo::Pdb(i) => i.to_string(),
+            SymFileInfo::RawHash(h) => h.clone(),
         }
     }
 }
@@ -88,7 +91,7 @@ pub enum DownloadError {
 }
 
 #[derive(Debug)]
-enum DownloadStatus {
+pub enum DownloadStatus {
     /// The symbol file already exists in the filesystem.
     AlreadyExists,
     /// The symbol file was successfully downloaded from the remote server.
@@ -102,34 +105,8 @@ enum RemoteFileType {
     Path(String),
 }
 
-#[derive(Debug, Clone)]
-struct ManifestEntry {
-    /// The PDB's name
-    name: String,
-    /// The hash plus age of the PDB
-    hash: String,
-    /// The version number (maybe?)
-    version: u32,
-}
-
-impl FromStr for ManifestEntry {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let elements = s.split(",").collect::<Vec<_>>();
-        if elements.len() != 3 {
-            anyhow::bail!("Invalid manifest line: \"{s}\"");
-        }
-
-        Ok(Self {
-            name: elements[0].to_string(),
-            hash: elements[1].to_string(),
-            version: u32::from_str(elements[2])?,
-        })
-    }
-}
-
 /// A symbol server, defined by the user with the syntax `SRV*<cache_path>*<server_url>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymSrv {
     /// The base URL for a symbol server, e.g: `https://msdl.microsoft.com/download/symbols`
     pub server_url: String,
@@ -250,10 +227,7 @@ async fn download_single(
 
             match url_type {
                 "PATH" => RemoteFileType::Path(url.to_string()),
-
-                // Try another server.
-                "MSG" => return Err(DownloadError::FileNotFound),
-
+                "MSG" => return Err(DownloadError::FileNotFound), // Try another server.
                 typ => {
                     unimplemented!(
                         "Unknown symbol redirection pointer type {typ}!\n{url_type}:{url}"
@@ -272,13 +246,15 @@ async fn download_single(
         RemoteFileType::Url(mut res) => {
             // N.B: If the server sends us a content-length header, use it to display a progress bar.
             // Otherwise, just display a spinner progress bar.
+            // TODO: Should have the library user provide a trait that allows us to create a progress bar
+            // in abstract
             let dl_pb = if let Some(m) = mp {
-                match res.content_length() {
+                let dl_pb = match res.content_length() {
                     Some(len) => {
                         let dl_pb = m.add(ProgressBar::new(len));
                         dl_pb.set_style(style::bar());
 
-                        Some(dl_pb)
+                        dl_pb
                     }
 
                     None => {
@@ -286,16 +262,15 @@ async fn download_single(
                         dl_pb.set_style(style::spinner());
                         dl_pb.enable_steady_tick(std::time::Duration::from_millis(5));
 
-                        Some(dl_pb)
+                        dl_pb
                     }
-                }
+                };
+
+                dl_pb.set_message(format!("{}/{}", hash, name));
+                Some(dl_pb)
             } else {
                 None
             };
-
-            if let Some(dl_pb) = &dl_pb {
-                dl_pb.set_message(format!("{}/{}", hash, name));
-            }
 
             // Create the output file.
             let mut file = tokio::fs::File::create(&file_name_tmp)
@@ -416,124 +391,93 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
     }
 }
 
-/// Download and cache a single file in the symbol store described by `srvstr`,
-/// and then return its path.
-pub async fn download_file(
-    srvstr: String,
-    name: &str,
-    info: &SymFileInfo,
-) -> Result<PathBuf, DownloadError> {
-    // First, parse the server string to figure out where we're supposed to fetch symbols from,
-    // and where to.
-    let srvs = SymSrvList::from_str(&srvstr)?;
-
-    // Couple the servers with a reqwest client.
-    let srvs = srvs
-        .0
-        .into_iter()
-        .map(|s| (s.clone(), connect_server(s).unwrap()))
-        .collect::<Box<[_]>>();
-
-    for (srv, client) in srvs.iter() {
-        let hash = info.to_string();
-
-        match download_single(client, srv, None, name, &hash).await {
-            Ok((status, path)) => return Ok(path),
-            Err(e) => match e {
-                // Try another server.
-                DownloadError::FileNotFound => continue,
-                e => return Err(e),
-            },
-        }
-    }
-
-    Err(DownloadError::FileNotFound)
+pub struct SymContext {
+    /// The list of connected servers.
+    servers: Box<[(SymSrv, reqwest::Client)]>,
 }
 
-pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
-    // First, parse the server string to figure out where we're supposed to fetch symbols from,
-    // and where to.
-    let srvs = SymSrvList::from_str(&srvstr)?;
+impl SymContext {
+    pub fn new(srvstr: String) -> anyhow::Result<Self> {
+        // First, parse the server string to figure out where we're supposed to fetch symbols from,
+        // and where to.
+        let servers = SymSrvList::from_str(&srvstr)?;
 
-    // Couple the servers with a reqwest client.
-    let srvs = srvs
-        .0
-        .into_iter()
-        .map(|s| (s.clone(), connect_server(s).unwrap()))
-        .collect::<Box<[_]>>();
+        // Couple the servers with a reqwest client.
+        let servers = servers
+            .0
+            .into_iter()
+            .map(|s| (s.clone(), connect_server(s).unwrap()))
+            .collect::<Box<[_]>>();
 
-    // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
-    // The following code is based off of the above blog post.
-    let m = MultiProgress::new();
+        Ok(Self { servers })
+    }
 
-    // Create a progress bar.
-    let pb = m.add(ProgressBar::new(files.len() as u64));
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>10}/{len:10} ({eta}) {msg}")
-            .unwrap()
-            .progress_chars("█▉▊▋▌▍▎▏  "),
-    );
+    /// Attempt to find a single file in the symbol store associated with this context.
+    ///
+    /// If the file is found, its cache path will be returned.
+    pub fn find_file(&self, name: &str, info: &SymFileInfo) -> Option<PathBuf> {
+        for (srv, _) in self.servers.iter() {
+            let hash = info.to_string();
 
-    // Set up our asynchronous code block.
-    // This block will be lazily executed when something awaits on it, such as the tokio thread pool below.
-    let queries = futures::stream::iter(
-        // Map the files vector using a closure, such that it's converted from a Vec<String>
-        // into a Vec<Result<T, E>>
-        files.into_iter().map(|line| {
-            // Take explicit references to a few variables and move them into the async block.
-            let srvs = &srvs;
-            let pb = pb.clone();
-            let m = &m;
+            // The file should be in each cache directory under the following path:
+            // "<cache_dir>/<name>/<hash>/<name>"
+            let path = PathBuf::from(&srv.cache_path)
+                .join(name)
+                .join(hash)
+                .join(name);
 
-            async move {
-                pb.inc(1);
-
-                for (srv, client) in srvs.iter() {
-                    let e = ManifestEntry::from_str(&line).unwrap();
-
-                    match download_single(client, srv, Some(m), &e.name, &e.hash).await {
-                        Ok(r) => return Ok(r),
-                        Err(e) => match e {
-                            // Try next server.
-                            DownloadError::FileNotFound => continue,
-                            e => return Err(e),
-                        },
-                    }
-                }
-
-                Err(DownloadError::FileNotFound)
+            if path.exists() {
+                return Some(path);
             }
-        }),
-    )
-    .buffer_unordered(32)
-    .collect::<Vec<Result<(DownloadStatus, PathBuf), DownloadError>>>();
-
-    // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
-    // That way we don't exhaust system resources in the networking stack or filesystem.
-    let output = queries.await;
-
-    pb.finish();
-
-    let mut ok = 0u64;
-    let mut ok_exists = 0u64;
-    let mut err = 0u64;
-
-    // Collect output results.
-    output.iter().for_each(|x| match x {
-        Err(_) => {
-            err += 1;
         }
 
-        Ok((s, _)) => match s {
-            DownloadStatus::AlreadyExists => ok_exists += 1,
-            DownloadStatus::DownloadedOk => ok += 1,
-        },
-    });
+        None
+    }
 
-    println!("{} files failed to download", err);
-    println!("{} files already downloaded", ok_exists);
-    println!("{} files downloaded successfully", ok);
+    /// Download and cache a single file in the symbol store associated with this context,
+    /// and then return its path on the local system.
+    pub async fn download_file(
+        &self,
+        name: &str,
+        info: &SymFileInfo,
+    ) -> Result<PathBuf, DownloadError> {
+        for (srv, client) in self.servers.iter() {
+            let hash = info.to_string();
 
-    return Ok(());
+            match download_single(client, srv, None, name, &hash).await {
+                Ok((status, path)) => return Ok(path),
+                Err(e) => match e {
+                    // Try another server.
+                    DownloadError::FileNotFound => continue,
+                    e => return Err(e),
+                },
+            }
+        }
+
+        Err(DownloadError::FileNotFound)
+    }
+
+    /// Download (displaying progress) and cache a single file in the symbol store associated with this context,
+    /// and then return its path on the local system.
+    pub async fn download_file_progress(
+        &self,
+        name: &str,
+        info: &SymFileInfo,
+        mp: &MultiProgress,
+    ) -> Result<PathBuf, DownloadError> {
+        for (srv, client) in self.servers.iter() {
+            let hash = info.to_string();
+
+            match download_single(client, srv, Some(mp), name, &hash).await {
+                Ok((status, path)) => return Ok(path),
+                Err(e) => match e {
+                    // Try another server.
+                    DownloadError::FileNotFound => continue,
+                    e => return Err(e),
+                },
+            }
+        }
+
+        Err(DownloadError::FileNotFound)
+    }
 }

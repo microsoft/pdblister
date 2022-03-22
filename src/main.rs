@@ -11,13 +11,14 @@
 //! used for the actual download. To download symbols after this manifest
 //! has been generated use `symchk /im manifest /s <symbol path>`
 use anyhow::Context;
-use indicatif::ProgressStyle;
+use indicatif::{MultiProgress, ProgressStyle};
 use zerocopy::{AsBytes, FromBytes};
 
 use std::env;
 use std::io::SeekFrom;
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Instant;
 
 use futures::{stream, Stream, StreamExt};
@@ -26,6 +27,8 @@ use tokio::{
     fs::{self, DirEntry},
     io::AsyncWriteExt,
 };
+
+use crate::symsrv::{DownloadError, DownloadStatus, SymContext, SymFileInfo};
 
 mod symsrv;
 
@@ -478,6 +481,109 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
     anyhow::bail!("Failed to find RSDS codeview directory")
 }
 
+#[derive(Debug, Clone)]
+struct ManifestEntry {
+    /// The PDB's name
+    name: String,
+    /// The hash plus age of the PDB
+    hash: String,
+    /// The version number (maybe?)
+    version: u32,
+}
+
+impl FromStr for ManifestEntry {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let elements = s.split(",").collect::<Vec<_>>();
+        if elements.len() != 3 {
+            anyhow::bail!("Invalid manifest line: \"{s}\"");
+        }
+
+        Ok(Self {
+            name: elements[0].to_string(),
+            hash: elements[1].to_string(),
+            version: u32::from_str(elements[2])?,
+        })
+    }
+}
+
+pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
+    let ctx = SymContext::new(srvstr).context("failed to create symbol context")?;
+
+    // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
+    // The following code is based off of the above blog post.
+    let m = MultiProgress::new();
+
+    // Create a progress bar.
+    let pb = m.add(ProgressBar::new(files.len() as u64));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>10}/{len:10} ({eta}) {msg}")
+            .unwrap()
+            .progress_chars("█▉▊▋▌▍▎▏  "),
+    );
+
+    // Set up our asynchronous code block.
+    // This block will be lazily executed when something awaits on it, such as the tokio thread pool below.
+    let queries = futures::stream::iter(
+        // Map the files vector using a closure, such that it's converted from a Vec<String>
+        // into a Vec<Result<T, E>>
+        files.into_iter().map(|line| {
+            // Take explicit references to a few variables and move them into the async block.
+            let ctx = &ctx;
+            let pb = pb.clone();
+            let m = &m;
+
+            async move {
+                pb.inc(1);
+
+                let e = ManifestEntry::from_str(&line).unwrap();
+                let info = SymFileInfo::RawHash(e.hash);
+
+                if ctx.find_file(&e.name, &info).is_some() {
+                    return Ok(DownloadStatus::AlreadyExists);
+                }
+
+                match ctx.download_file_progress(&e.name, &info, m).await {
+                    Ok(_) => Ok(DownloadStatus::DownloadedOk),
+                    Err(e) => Err(e),
+                }
+            }
+        }),
+    )
+    .buffer_unordered(32)
+    .collect::<Vec<Result<DownloadStatus, DownloadError>>>();
+
+    // N.B: The buffer_unordered bit above allows us to feed in 64 requests at a time to tokio.
+    // That way we don't exhaust system resources in the networking stack or filesystem.
+    let output = queries.await;
+
+    pb.finish();
+
+    let mut ok = 0u64;
+    let mut ok_exists = 0u64;
+    let mut err = 0u64;
+
+    // Collect output results.
+    output.iter().for_each(|x| match x {
+        Err(_) => {
+            err += 1;
+        }
+
+        Ok(s) => match s {
+            DownloadStatus::AlreadyExists => ok_exists += 1,
+            DownloadStatus::DownloadedOk => ok += 1,
+        },
+    });
+
+    println!("{} files failed to download", err);
+    println!("{} files already downloaded", ok_exists);
+    println!("{} files downloaded successfully", ok);
+
+    return Ok(());
+}
+
 async fn run() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
 
@@ -554,7 +660,7 @@ async fn run() -> anyhow::Result<()> {
 
         print!("Deduped manifest has {} PDBs\n", lines.len());
 
-        match symsrv::download_manifest(args[2].clone(), lines).await {
+        match download_manifest(args[2].clone(), lines).await {
             Ok(_) => println!("Success!"),
             Err(e) => println!("Failed: {}", e),
         }
