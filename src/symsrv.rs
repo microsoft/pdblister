@@ -202,6 +202,22 @@ async fn download_single(
             .await
             .context("failed to request remote file")?;
         if pdb_req.status().is_success() {
+            if let Some(mime) = pdb_req.headers().get(reqwest::header::CONTENT_TYPE) {
+                let mime = mime
+                    .to_str()
+                    .expect("Content-Type header not a valid string")
+                    .parse::<mime::Mime>()
+                    .expect("Content-Type header not a valid MIME type");
+
+                if mime.subtype() == mime::HTML {
+                    // Azure DevOps will do this if the authentication header isn't correct...
+                    panic!(
+                        "Server {} returned an invalid Content-Type of {mime}",
+                        srv.server_url
+                    );
+                }
+            }
+
             RemoteFileType::Url(pdb_req)
         } else {
             // Try a `file.ptr` redirection URL
@@ -368,9 +384,8 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
         Some(Host::Domain(d)) => {
             match d {
                 // Azure DevOps
-                // TODO: Ugh, fixme. Need to match domain name only.
-                "microsoft.artifacts.visualstudio.com" => {
-                    let pat = std::env::var("AZ_PAT").context("var AZ_PAT is not defined!")?;
+                d if d.ends_with("artifacts.visualstudio.com") => {
+                    let pat = std::env::var("ADO_PAT").context("var ADO_PAT is not defined!")?;
                     if url.scheme() != "https" {
                         anyhow::bail!("This URL must be over https!");
                     }

@@ -9,6 +9,7 @@ anyhow = "1.0"
 base64 = "0.13"
 futures = "0.3"
 indicatif = { git = "https://github.com/mitsuhiko/indicatif.git", branch = "main", features = ["tokio"] }
+mime = "0.3"
 pin-utils = "0.1"
 rand = "0.8"
 reqwest = "0.11"

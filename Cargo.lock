@@ -586,6 +586,7 @@ dependencies = [
  "base64",
  "futures",
  "indicatif",
+ "mime",
  "pin-utils",
  "rand",
  "reqwest",
