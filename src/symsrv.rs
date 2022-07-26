@@ -364,7 +364,9 @@ async fn download_single(
 fn connect_pat(token: &str) -> anyhow::Result<reqwest::Client> {
     use reqwest::header;
 
-    let b64 = base64::encode(token);
+    // N.B: According to ADO documentation, the token needs to be preceded by an arbitrary
+    // string followed by a colon. The arbitrary string can be empty.
+    let b64 = base64::encode(format!(":{token}"));
 
     let mut headers = header::HeaderMap::new();
     let auth_value = header::HeaderValue::from_str(&format!("Basic {b64}"))?;
