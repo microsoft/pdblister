@@ -16,7 +16,7 @@ in lieu of this tool, use `symchk /im manifest /s <symbol path>`
 
 Usage:
 
-    pdblister [manifest | download | filestore | clean] <filepath>
+    pdblister [manifest | download | download_single | filestore | clean] <filepath>
  
     === Create manifest === 
     
@@ -36,6 +36,14 @@ Usage:
 
         This command takes no parameters. It simply downloads all the PDBs
         specified in the `manifest` file.
+
+    === Download single executable ===
+
+        pdblister download_single <sympath> <exepath>
+
+        This command will take a symbol server URL and executable path, and
+        use the symbol server to download the PDB file for the executable to
+        the cache directory.
 
     === Create a file store ===
 

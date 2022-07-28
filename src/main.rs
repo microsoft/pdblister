@@ -55,6 +55,14 @@ const USAGE: &'static str = "Usage:
         This command takes no parameters. It simply downloads all the PDBs
         specified in the `manifest` file.
 
+    === Download single executable ===
+
+        pdblister download_single <sympath> <exepath>
+
+        This command will take a symbol server URL and executable path, and
+        use the symbol server to download the PDB file for the executable to
+        the cache directory.
+
     === Create a file store ===
 
         pdblister filestore <filepath>
@@ -663,6 +671,24 @@ async fn run() -> anyhow::Result<()> {
         match download_manifest(args[2].clone(), lines).await {
             Ok(_) => println!("Success!"),
             Err(e) => println!("Failed: {}", e),
+        }
+    } else if args.len() == 4 && args[1] == "download_single" {
+        let ctx = SymContext::new(args[2].clone()).context("failed to create symbol context")?;
+
+        // Resolve the PDB for the executable specified.
+        let e = ManifestEntry::from_str(
+            &get_pdb(Path::new(&args[3])).context("failed to resolve PDB hash")?,
+        )
+        .unwrap();
+        let info = SymFileInfo::RawHash(e.hash);
+
+        if let Some(p) = ctx.find_file(&e.name, &info) {
+            println!("file already cached: {}", p.to_string_lossy());
+        } else {
+            match ctx.download_file(&e.name, &info).await {
+                Ok(p) => println!("file successfully downloaded: {}", p.to_string_lossy()),
+                Err(e) => Err(e).context("failed to download PDB")?,
+            };
         }
     } else if args.len() == 3 && args[1] == "filestore" {
         /* List all files in the directory specified by args[2] */
