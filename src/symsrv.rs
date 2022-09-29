@@ -387,7 +387,13 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
             match d {
                 // Azure DevOps
                 d if d.ends_with("artifacts.visualstudio.com") => {
-                    let pat = std::env::var("ADO_PAT").context("var ADO_PAT is not defined!")?;
+                    // Try and find the PAT for ADO, either from basic authentication or an ADO_PAT
+                    // environment variable.
+                    let pat = url
+                        .password()
+                        .map(|p| p.to_string())
+                        .or(std::env::var("ADO_PAT").ok())
+                        .context("PAT not specified for ADO")?;
                     if url.scheme() != "https" {
                         anyhow::bail!("This URL must be over https!");
                     }
