@@ -1,7 +1,11 @@
 [package]
 name = "pdblister"
-version = "0.1.0"
-authors = ["Gogs <gogs@fake.local>"]
+description = "Faster version of `symchk /om` for generating PDB manifests of offline machines"
+license-file = "LICENSE"
+homepage = "https://github.com/microsoft/pdblister"
+repository = "https://github.com/microsoft/pdblister"
+version = "0.0.1"
+authors = ["Gogs <gogs@fake.local>", "Justin Moore <jusmoore@microsoft.com>"]
 edition = "2018"
 
 [dependencies]
