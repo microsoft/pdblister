@@ -370,8 +370,9 @@ dependencies = [
 
 [[package]]
 name = "indicatif"
-version = "0.17.0-rc.11"
-source = "git+https://github.com/mitsuhiko/indicatif.git?branch=main#de9862bd2e35e2ca9eee375db27cc393a2fd0b2f"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfddc9561e8baf264e0e45e197fd7696320026eb10a8180340debc27b18f535b"
 dependencies = [
  "console",
  "number_prefix",
