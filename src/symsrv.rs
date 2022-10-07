@@ -10,10 +10,9 @@ extern crate reqwest;
 extern crate tokio;
 
 use anyhow::Context;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar};
 use thiserror::Error;
 
-use futures::stream::StreamExt;
 use tokio::io::AsyncWriteExt;
 
 mod style {
@@ -468,7 +467,7 @@ impl SymContext {
             let hash = info.to_string();
 
             match download_single(client, srv, None, name, &hash).await {
-                Ok((status, path)) => return Ok(path),
+                Ok((_status, path)) => return Ok(path),
                 Err(e) => match e {
                     // Try another server.
                     DownloadError::FileNotFound => continue,
@@ -492,7 +491,7 @@ impl SymContext {
             let hash = info.to_string();
 
             match download_single(client, srv, Some(mp), name, &hash).await {
-                Ok((status, path)) => return Ok(path),
+                Ok((_status, path)) => return Ok(path),
                 Err(e) => match e {
                     // Try another server.
                     DownloadError::FileNotFound => continue,

@@ -12,7 +12,6 @@
 //! has been generated use `symchk /im manifest /s <symbol path>`
 use anyhow::Context;
 use indicatif::{MultiProgress, ProgressStyle};
-use zerocopy::{AsBytes, FromBytes};
 
 use std::env;
 use std::io::SeekFrom;
@@ -30,6 +29,7 @@ use tokio::{
 
 use crate::symsrv::{DownloadError, DownloadStatus, SymContext, SymFileInfo};
 
+mod pe;
 mod symsrv;
 
 const USAGE: &'static str = "Usage:
@@ -118,213 +118,8 @@ fn recursive_listdir(
     .flatten()
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct MZHeader {
-    signature: [u8; 2],
-    last_page_bytes: u16,
-    num_pages: u16,
-    num_relocations: u16,
-    header_size: u16,
-    min_memory: u16,
-    max_memory: u16,
-    initial_ss: u16,
-    initial_sp: u16,
-    checksum: u16,
-    entry: u32,
-    ptr_relocation: u16,
-    overlay: u16,
-    reserved: [u8; 32],
-    new_header: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct PEHeader {
-    signature: [u8; 4],
-    machine: u16,
-    num_sections: u16,
-    timestamp: u32,
-    ptr_symtable: u32,
-    num_smtable: u32,
-    optional_header_size: u16,
-    characteristics: u16,
-}
-
-const IMAGE_FILE_MACHINE_I386: u16 = 0x014c;
-const IMAGE_FILE_MACHINE_IA64: u16 = 0x0200;
-const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct WindowsPEHeader32 {
-    magic: u16,
-    linker_major_version: u8,
-    linker_minor_version: u8,
-    size_of_code: u32,
-    size_of_initialized_data: u32,
-    size_of_uninitialized_data: u32,
-    entry: u32,
-    code_base: u32,
-    data_base: u32,
-    image_base: u32,
-    section_align: u32,
-    file_align: u32,
-    major_os_version: u16,
-    minor_os_version: u16,
-    major_image_version: u16,
-    minor_image_version: u16,
-    major_subsystem_version: u16,
-    minor_subsystem_version: u16,
-    win32_version: u32,
-    size_of_image: u32,
-    size_of_headers: u32,
-    checksum: u32,
-    subsystem: u16,
-    dll_characteristics: u16,
-    size_of_stack_reserve: u32,
-    size_of_stack_commit: u32,
-    size_of_heap_reserve: u32,
-    size_of_heap_commit: u32,
-    loader_flags: u32,
-    num_tables: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct WindowsPEHeader64 {
-    magic: u16,
-    linker_major_version: u8,
-    linker_minor_version: u8,
-    size_of_code: u32,
-    size_of_initialized_data: u32,
-    size_of_uninitialized_data: u32,
-    entry: u32,
-    code_base: u32,
-    image_base: u64,
-    section_align: u32,
-    file_align: u32,
-    major_os_version: u16,
-    minor_os_version: u16,
-    major_image_version: u16,
-    minor_image_version: u16,
-    major_subsystem_version: u16,
-    minor_subsystem_version: u16,
-    win32_version: u32,
-    size_of_image: u32,
-    size_of_headers: u32,
-    checksum: u32,
-    subsystem: u16,
-    dll_characteristics: u16,
-    size_of_stack_reserve: u64,
-    size_of_stack_commit: u64,
-    size_of_heap_reserve: u64,
-    size_of_heap_commit: u64,
-    loader_flags: u32,
-    num_tables: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct ImageDataDirectory {
-    vaddr: u32,
-    size: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct ImageSectionHeader {
-    name: [u8; 8],
-    vsize: u32,
-    vaddr: u32,
-    raw_data_size: u32,
-    pointer_to_raw_data: u32,
-    pointer_to_relocations: u32,
-    pointer_to_line_numbers: u32,
-    number_of_relocations: u16,
-    number_of_line_numbers: u16,
-    characteristics: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct ImageDebugDirectory {
-    characteristics: u32,
-    timestamp: u32,
-    major_version: u16,
-    minor_version: u16,
-    typ: u32,
-    size_of_data: u32,
-    address_of_raw_data: u32,
-    pointer_to_raw_data: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes)]
-struct CodeviewEntry {
-    signature: [u8; 4], // RSDS
-    guid_a: u32,
-    guid_b: u16,
-    guid_c: u16,
-    guid_d: [u8; 8],
-    age: u32,
-}
-
-const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
-
-/// Read a structure from a file stream, directly interpreting the raw bytes
-/// of the file as T.
-fn read_struct<T: AsBytes + FromBytes>(fd: &mut std::fs::File) -> io::Result<T> {
-    let mut ret: T = T::new_zeroed();
-    fd.read_exact(ret.as_bytes_mut())?;
-
-    Ok(ret)
-}
-
-/// Implementation mimicing #![feature(range_contains)] for those stable rust
-/// users.
-fn contains(range: &std::ops::Range<u32>, item: u32) -> bool {
-    (range.start <= item) && (item < range.end)
-}
-
-fn parse_pe(filename: &Path) -> anyhow::Result<(std::fs::File, MZHeader, PEHeader, u32, u32)> {
-    let mut fd = std::fs::File::open(filename)?;
-
-    /* Check for an MZ header */
-    let mz_header: MZHeader = read_struct(&mut fd)?;
-    if &mz_header.signature != b"MZ" {
-        anyhow::bail!("No MZ header present");
-    }
-
-    /* Seek to where the PE header should be */
-    if fd.seek(SeekFrom::Start(mz_header.new_header as u64))? != mz_header.new_header as u64 {
-        anyhow::bail!("Failed to seek to PE header");
-    }
-
-    /* Check for a PE header */
-    let pe_header: PEHeader = read_struct(&mut fd)?;
-    if &pe_header.signature != b"PE\0\0" {
-        anyhow::bail!("No PE header present");
-    }
-
-    /* Grab the number of tables from the bitness-specific table */
-    let (image_size, num_tables) = match pe_header.machine {
-        IMAGE_FILE_MACHINE_I386 => {
-            let opthdr: WindowsPEHeader32 = read_struct(&mut fd)?;
-            (opthdr.size_of_image, opthdr.num_tables)
-        }
-        IMAGE_FILE_MACHINE_IA64 | IMAGE_FILE_MACHINE_AMD64 => {
-            let opthdr: WindowsPEHeader64 = read_struct(&mut fd)?;
-            (opthdr.size_of_image, opthdr.num_tables)
-        }
-        _ => anyhow::bail!("Unsupported PE machine type"),
-    };
-
-    Ok((fd, mz_header, pe_header, image_size, num_tables))
-}
-
 fn get_file_path(filename: &Path) -> anyhow::Result<String> {
-    let (_, _, pe_header, image_size, _) = parse_pe(filename)?;
+    let (_, _, pe_header, image_size, _) = pe::parse_pe(filename)?;
 
     let filename = filename
         .file_name()
@@ -358,12 +153,12 @@ fn get_file_path(filename: &Path) -> anyhow::Result<String> {
 /// Returns a string which is the same representation you get from `symchk`
 /// when outputting a manifest for the PDB "<filename>,<guid><age>,1"
 fn get_pdb(filename: &Path) -> anyhow::Result<String> {
-    let (mut fd, mz_header, pe_header, _, num_tables) = parse_pe(filename)?;
+    let (mut fd, mz_header, pe_header, _, num_tables) = pe::parse_pe(filename)?;
 
     /* Load all the data directories into a vector */
     let mut data_dirs = Vec::new();
     for _ in 0..num_tables {
-        let datadir: ImageDataDirectory = read_struct(&mut fd)?;
+        let datadir: pe::ImageDataDirectory = pe::read_struct(&mut fd)?;
         data_dirs.push(datadir);
     }
 
@@ -379,7 +174,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
     }
 
     /* Validate debug table size is sane */
-    let iddlen = std::mem::size_of::<ImageDebugDirectory>() as u32;
+    let iddlen = std::mem::size_of::<pe::ImageDebugDirectory>() as u32;
     let debug_table_ents = debug_table.size / iddlen;
     if (debug_table.size % iddlen) != 0 || debug_table_ents == 0 {
         anyhow::bail!("No debug entries or not mod ImageDebugDirectory");
@@ -395,7 +190,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
     /* Parse all the sections into a vector */
     let mut sections = Vec::new();
     for _ in 0..pe_header.num_sections {
-        let sechdr: ImageSectionHeader = read_struct(&mut fd)?;
+        let sechdr: pe::ImageSectionHeader = pe::read_struct(&mut fd)?;
         sections.push(sechdr);
     }
 
@@ -411,8 +206,8 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
             /* Check if the entire debug table is contained in this sections
              * virtual address range.
              */
-            if contains(&secrange, debug_table.vaddr)
-                && contains(&secrange, debug_table.vaddr + debug_table.size - 1)
+            if secrange.contains(&{ debug_table.vaddr })
+                && secrange.contains(&(debug_table.vaddr + debug_table.size - 1))
             {
                 debug_data = Some(debug_table.vaddr - section.vaddr + section.pointer_to_raw_data);
                 break;
@@ -432,16 +227,16 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
 
     /* Look through all debug table entries for codeview entries */
     for _ in 0..debug_table_ents {
-        let de: ImageDebugDirectory = read_struct(&mut fd)?;
+        let de: pe::ImageDebugDirectory = pe::read_struct(&mut fd)?;
 
-        if de.typ == IMAGE_DEBUG_TYPE_CODEVIEW {
+        if de.typ == pe::IMAGE_DEBUG_TYPE_CODEVIEW {
             /* Seek to where the codeview entry should be */
             let cvo = de.pointer_to_raw_data as u64;
             if fd.seek(SeekFrom::Start(cvo))? != cvo {
                 anyhow::bail!("Failed to seek to codeview entry");
             }
 
-            let cv: CodeviewEntry = read_struct(&mut fd)?;
+            let cv: pe::CodeviewEntry = pe::read_struct(&mut fd)?;
             if &cv.signature != b"RSDS" {
                 anyhow::bail!("No RSDS signature present in codeview ent");
             }
