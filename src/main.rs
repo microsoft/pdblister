@@ -465,7 +465,7 @@ async fn run() -> anyhow::Result<()> {
 
         match download_manifest(args[2].clone(), lines).await {
             Ok(_) => println!("Success!"),
-            Err(e) => println!("Failed: {}", e),
+            Err(e) => println!("Failed: {:#}", e),
         }
     } else if args.len() == 4 && args[1] == "download_single" {
         let ctx = SymContext::new(args[2].clone()).context("failed to create symbol context")?;
