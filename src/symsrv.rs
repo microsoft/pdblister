@@ -124,7 +124,7 @@ impl FromStr for SymSrv {
         match directives.first() {
             // Simply exit the match statement if the directive is "SRV"
             Some(x) => {
-                if "SRV" == *x {
+                if "SRV" == x.to_ascii_uppercase() {
                     if directives.len() != 3 {
                         anyhow::bail!("");
                     }
