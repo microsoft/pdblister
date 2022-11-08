@@ -32,7 +32,7 @@ use crate::symsrv::{DownloadError, DownloadStatus, SymContext, SymFileInfo};
 mod pe;
 mod symsrv;
 
-const USAGE: &'static str = "Usage:
+const USAGE: &str = "Usage:
 
     pdblister [manifest | download | filestore | clean] <filepath>
  
@@ -298,7 +298,7 @@ impl FromStr for ManifestEntry {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let elements = s.split(",").collect::<Vec<_>>();
+        let elements = s.split(',').collect::<Vec<_>>();
         if elements.len() != 3 {
             anyhow::bail!("Invalid manifest line: \"{s}\"");
         }
@@ -384,7 +384,7 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
     println!("{} files already downloaded", ok_exists);
     println!("{} files downloaded successfully", ok);
 
-    return Ok(());
+    Ok(())
 }
 
 async fn run() -> anyhow::Result<()> {
@@ -436,7 +436,7 @@ async fn run() -> anyhow::Result<()> {
         for task in tasks {
             if let Some(e) = task.await.unwrap() {
                 output_file
-                    .write(&format!("{}\n", &e).as_bytes())
+                    .write(format!("{}\n", &e).as_bytes())
                     .await
                     .context("Failed to write to output manifest file")?;
             }
@@ -448,20 +448,20 @@ async fn run() -> anyhow::Result<()> {
         fd.read_to_string(&mut buf).expect("Failed to read file");
 
         /* Split the file into lines and collect into a vector */
-        let mut lines: Vec<String> = buf.lines().map(|l| String::from(l)).collect();
+        let mut lines: Vec<String> = buf.lines().map(String::from).collect();
 
         /* If there is nothing to download, return out early */
-        if lines.len() == 0 {
-            print!("Nothing to download\n");
+        if lines.is_empty() {
+            println!("Nothing to download");
             return Ok(());
         }
 
-        print!("Original manifest has {} PDBs\n", lines.len());
+        println!("Original manifest has {} PDBs", lines.len());
 
         lines.sort();
         lines.dedup();
 
-        print!("Deduped manifest has {} PDBs\n", lines.len());
+        println!("Deduped manifest has {} PDBs", lines.len());
 
         match download_manifest(args[2].clone(), lines).await {
             Ok(_) => println!("Success!"),
@@ -502,8 +502,8 @@ async fn run() -> anyhow::Result<()> {
                                 .await
                                 .expect("Failed to create filestore directory");
 
-                            if let Err(_) = tokio::fs::copy(&e.path(), fsname).await {
-                                print!("Failed to copy file {:?}\n", &e.path());
+                            if let Err(err) = tokio::fs::copy(&e.path(), fsname).await {
+                                println!("Failed to copy file {:?}: {err:#}", &e.path());
                             }
                         }
                     }
@@ -520,7 +520,7 @@ async fn run() -> anyhow::Result<()> {
         print!("{}", USAGE);
     }
 
-    print!("Time elapsed: {:.3} seconds\n", it.elapsed().as_secs_f64());
+    println!("Time elapsed: {:.3} seconds", it.elapsed().as_secs_f64());
     Ok(())
 }
 
