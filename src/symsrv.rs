@@ -236,7 +236,7 @@ async fn download_single(
                 .context("failed to get file.ptr contents")?;
 
             // FIXME: Would prefer not to unwrap the iterator results...
-            let mut url_iter = url.split(":");
+            let mut url_iter = url.split(':');
             let url_type = url_iter.next().unwrap();
             let url = url_iter.next().unwrap();
 
@@ -391,7 +391,7 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
                     let pat = url
                         .password()
                         .map(|p| p.to_string())
-                        .or(std::env::var("ADO_PAT").ok())
+                        .or_else(|| std::env::var("ADO_PAT").ok())
                         .context("PAT not specified for ADO")?;
                     if url.scheme() != "https" {
                         anyhow::bail!("This URL must be over https!");
@@ -427,7 +427,7 @@ impl SymContext {
         // Couple the servers with a reqwest client.
         let servers = servers
             .0
-            .into_iter()
+            .iter()
             .map(|s| (s.clone(), connect_server(s).unwrap()))
             .collect::<Box<[_]>>();
 
