@@ -393,7 +393,7 @@ async fn run() -> anyhow::Result<()> {
                         .help("The root of the directory tree to search for PEs")
                         .required(true)
                 ]),
-        ]).get_matches();
+        ]).arg_required_else_help(true).get_matches();
 
     let it = Instant::now();
 
