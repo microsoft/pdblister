@@ -421,10 +421,10 @@ pub struct SymContext {
 }
 
 impl SymContext {
-    pub fn new(srvstr: String) -> anyhow::Result<Self> {
+    pub fn new(srvstr: &str) -> anyhow::Result<Self> {
         // First, parse the server string to figure out where we're supposed to fetch symbols from,
         // and where to.
-        let servers = SymSrvList::from_str(&srvstr)?;
+        let servers = SymSrvList::from_str(srvstr)?;
 
         // Couple the servers with a reqwest client.
         let servers = servers

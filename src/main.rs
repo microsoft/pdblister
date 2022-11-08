@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! This is a tiny project to be a quick alternative to symchk for generating
 //! manifests. This mimics symchk of the form `symchk /om manifest /r <path>`
 //! but only looks for MZ/PE files.
@@ -10,7 +8,10 @@
 //! The output manifest is compatible with symchk and thus symchk is currently
 //! used for the actual download. To download symbols after this manifest
 //! has been generated use `symchk /im manifest /s <symbol path>`
+#![forbid(unsafe_code)]
+
 use anyhow::Context;
+use clap::{Arg, Command};
 use indicatif::{MultiProgress, ProgressStyle};
 
 use std::env;
@@ -32,59 +33,24 @@ use crate::symsrv::{DownloadError, DownloadStatus, SymContext, SymFileInfo};
 mod pe;
 mod symsrv;
 
-const USAGE: &str = "Usage:
+const MANIFEST_DESC: &str = "This command takes in a filepath to recursively search for files that
+have a corresponding PDB. This creates a file called `manifest` which
+is compatible with symchk.
 
-    pdblister [manifest | download | filestore | clean] <filepath>
- 
-    === Create manifest === 
-    
-        pdblister manifest <filepath>
+For example `pdblister manifest C:\\windows` will create `manifest`
+containing all of the PDB signatures for all of the files in
+C:\\windows.";
 
-        This command takes in a filepath to recursively search for files that
-        have a corresponding PDB. This creates a file called `manifest` which
-        is compatible with symchk.
-        
-        For example `pdblister manifest C:\\windows` will create `manifest`
-        containing all of the PDB signatures for all of the files in
-        C:\\windows.
+const FILESTORE_DESC: &str = "This command recursively walks filepath to find all PEs. Any PE file
+that is found is copied to the local directory 'filestore' using the
+layout that symchk.exe uses to store normal files. This is used to
+create a store of all PEs (such as .dlls), which can be used by a
+kernel debugger to read otherwise paged out memory by downloading the
+original PE source file from this filestore.
 
-    === Download from manifest ===
-
-        pdblister download <sympath>
-
-        This command takes no parameters. It simply downloads all the PDBs
-        specified in the `manifest` file.
-
-    === Download single executable ===
-
-        pdblister download_single <sympath> <exepath>
-
-        This command will take a symbol server URL and executable path, and
-        use the symbol server to download the PDB file for the executable to
-        the cache directory.
-
-    === Create a file store ===
-
-        pdblister filestore <filepath>
-
-        This command recursively walks filepath to find all PEs. Any PE file
-        that is found is copied to the local directory 'filestore' using the
-        layout that symchk.exe uses to store normal files. This is used to
-        create a store of all PEs (such as .dlls), which can be used by a
-        kernel debugger to read otherwise paged out memory by downloading the
-        original PE source file from this filestore.
-
-        To use this filestore simply merge the contents in with a symbol
-        store/cache path. We keep it separate in this tool just to make it
-        easier to only get PDBs if that's all you really want.
-
-    === Clean ===
-
-        pdblister clean
-
-        This command removes the `manifest` file as well as the symbol folder
-        and the filestore folder
-";
+To use this filestore simply merge the contents in with a symbol
+store/cache path. We keep it separate in this tool just to make it
+easier to only get PDBs if that's all you really want.";
 
 /// Given a `path`, return a stream of all the files recursively found from
 /// that path.
@@ -311,7 +277,7 @@ impl FromStr for ManifestEntry {
     }
 }
 
-pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Result<()> {
+pub async fn download_manifest(srvstr: &str, files: Vec<String>) -> anyhow::Result<()> {
     let ctx = SymContext::new(srvstr).context("failed to create symbol context")?;
 
     // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
@@ -388,136 +354,178 @@ pub async fn download_manifest(srvstr: String, files: Vec<String>) -> anyhow::Re
 }
 
 async fn run() -> anyhow::Result<()> {
-    let args: Vec<String> = env::args().collect();
+    let matches = Command::new("pdblister")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("This tool lets you quickly download PDBs from a symbol server")
+        .subcommands([
+            Command::new("manifest")
+                .about("Recursively searches a directory tree and generate a manifest file containing PDB hashes for all executables found")
+                .long_about(MANIFEST_DESC)
+                .args([
+                    Arg::new("filepath")
+                        .help("The root of the directory tree to search for PEs")
+                        .required(true)
+                ]),
+            Command::new("download")
+                .about("Downloads all the PDBs specified in the manifest file named `manifest`")
+                .args([
+                    Arg::new("symsrv")
+                        .help("The symbol server URL")
+                        .long_help("The URL to download symbols from. For example, `SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols`")
+                        .required(true)
+                ]),
+            Command::new("download_single")
+                .about("Downloads a PDB file corresponding to a single PE file")
+                .args([
+                    Arg::new("symsrv")
+                        .help("The symbol server URL")
+                        .long_help("The URL to download symbols from. For example, `SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols`")
+                        .required(true),
+                    Arg::new("filepath")
+                        .help("The PE file path")
+                        .required(true)
+                ]),
+            Command::new("filestore")
+                .about("Recursively searches a directory tree and caches all PEs in the current directory in a symbol cache layout")
+                .long_about(FILESTORE_DESC)
+                .args([
+                    Arg::new("filepath")
+                        .help("The root of the directory tree to search for PEs")
+                        .required(true)
+                ]),
+        ]).get_matches();
 
     let it = Instant::now();
 
-    if args.len() == 3 && args[1] == "manifest" {
-        /* List all files in the directory specified by args[2] */
-        let dir = Path::new(args[2].as_str());
-        let listing: Vec<Result<DirEntry, io::Error>> = recursive_listdir(dir).collect().await;
+    match matches.subcommand() {
+        Some(("manifest", matches)) => {
+            /* List all files in the directory specified by args[2] */
+            let dir = Path::new(matches.get_one::<String>("filepath").unwrap());
+            let listing: Vec<Result<DirEntry, io::Error>> = recursive_listdir(dir).collect().await;
 
-        let pb = ProgressBar::new(listing.len() as u64);
+            let pb = ProgressBar::new(listing.len() as u64);
 
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}",
-                )
-                .unwrap()
-                .progress_chars("##-"),
-        );
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "[{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}",
+                    )
+                    .unwrap()
+                    .progress_chars("##-"),
+            );
 
-        // Map the listing into strings to write into the manifest
-        let tasks: Vec<_> = listing
-            .into_iter()
-            .filter_map(move |e| {
-                let pb = pb.clone();
+            // Map the listing into strings to write into the manifest
+            let tasks: Vec<_> = listing
+                .into_iter()
+                .filter_map(move |e| {
+                    let pb = pb.clone();
 
-                match e {
-                    Ok(e) => Some(tokio::spawn(async move {
-                        pb.inc(1);
+                    match e {
+                        Ok(e) => Some(tokio::spawn(async move {
+                            pb.inc(1);
 
-                        match get_pdb(&e.path()) {
-                            Ok(manifest_str) => Some(manifest_str),
-                            Err(_) => None,
-                        }
-                    })),
+                            match get_pdb(&e.path()) {
+                                Ok(manifest_str) => Some(manifest_str),
+                                Err(_) => None,
+                            }
+                        })),
 
-                    Err(_) => None,
+                        Err(_) => None,
+                    }
+                })
+                .collect();
+
+            let mut output_file = tokio::fs::File::create("manifest")
+                .await
+                .context("Failed to create output manifest file")?;
+
+            for task in tasks {
+                if let Some(e) = task.await.unwrap() {
+                    output_file
+                        .write(format!("{}\n", &e).as_bytes())
+                        .await
+                        .context("Failed to write to output manifest file")?;
                 }
-            })
-            .collect();
-
-        let mut output_file = tokio::fs::File::create("manifest")
-            .await
-            .context("Failed to create output manifest file")?;
-
-        for task in tasks {
-            if let Some(e) = task.await.unwrap() {
-                output_file
-                    .write(format!("{}\n", &e).as_bytes())
-                    .await
-                    .context("Failed to write to output manifest file")?;
             }
         }
-    } else if args.len() == 3 && args[1] == "download" {
-        /* Read the entire manifest file into a string */
-        let mut buf = String::new();
-        let mut fd = std::fs::File::open("manifest").context("Failed to open PDB manifest file")?;
-        fd.read_to_string(&mut buf).expect("Failed to read file");
+        Some(("download", matches)) => {
+            let srvstr = matches.get_one::<String>("symsrv").unwrap();
 
-        /* Split the file into lines and collect into a vector */
-        let mut lines: Vec<String> = buf.lines().map(String::from).collect();
+            /* Read the entire manifest file into a string */
+            let mut buf = String::new();
+            let mut fd =
+                std::fs::File::open("manifest").context("Failed to open PDB manifest file")?;
+            fd.read_to_string(&mut buf).expect("Failed to read file");
 
-        /* If there is nothing to download, return out early */
-        if lines.is_empty() {
-            println!("Nothing to download");
-            return Ok(());
+            /* Split the file into lines and collect into a vector */
+            let mut lines: Vec<String> = buf.lines().map(String::from).collect();
+
+            /* If there is nothing to download, return out early */
+            if lines.is_empty() {
+                println!("Nothing to download");
+                return Ok(());
+            }
+
+            println!("Original manifest has {} PDBs", lines.len());
+
+            lines.sort();
+            lines.dedup();
+
+            println!("Deduped manifest has {} PDBs", lines.len());
+
+            match download_manifest(srvstr, lines).await {
+                Ok(_) => println!("Success!"),
+                Err(e) => println!("Failed: {:#}", e),
+            }
         }
+        Some(("download_single", matches)) => {
+            let ctx = SymContext::new(matches.get_one::<String>("symsrv").unwrap())
+                .context("failed to create symbol context")?;
 
-        println!("Original manifest has {} PDBs", lines.len());
+            // Resolve the PDB for the executable specified.
+            let e = ManifestEntry::from_str(
+                &get_pdb(Path::new(matches.get_one::<String>("filepath").unwrap()))
+                    .context("failed to resolve PDB hash")?,
+            )
+            .unwrap();
+            let info = SymFileInfo::RawHash(e.hash);
 
-        lines.sort();
-        lines.dedup();
-
-        println!("Deduped manifest has {} PDBs", lines.len());
-
-        match download_manifest(args[2].clone(), lines).await {
-            Ok(_) => println!("Success!"),
-            Err(e) => println!("Failed: {:#}", e),
+            if let Some(p) = ctx.find_file(&e.name, &info) {
+                println!("file already cached: {}", p.to_string_lossy());
+            } else {
+                match ctx.download_file(&e.name, &info).await {
+                    Ok(p) => println!("file successfully downloaded: {}", p.to_string_lossy()),
+                    Err(e) => Err(e).context("failed to download PDB")?,
+                };
+            }
         }
-    } else if args.len() == 4 && args[1] == "download_single" {
-        let ctx = SymContext::new(args[2].clone()).context("failed to create symbol context")?;
+        Some(("filestore", matches)) => {
+            /* List all files in the directory specified by args[2] */
+            let dir = Path::new(matches.get_one::<String>("fielpath").unwrap());
+            let listing = recursive_listdir(&dir);
 
-        // Resolve the PDB for the executable specified.
-        let e = ManifestEntry::from_str(
-            &get_pdb(Path::new(&args[3])).context("failed to resolve PDB hash")?,
-        )
-        .unwrap();
-        let info = SymFileInfo::RawHash(e.hash);
+            listing
+                .for_each(|entry| async {
+                    if let Ok(e) = entry {
+                        if let Ok(fsname) = get_file_path(&e.path()) {
+                            let fsname = Path::new(&fsname);
 
-        if let Some(p) = ctx.find_file(&e.name, &info) {
-            println!("file already cached: {}", p.to_string_lossy());
-        } else {
-            match ctx.download_file(&e.name, &info).await {
-                Ok(p) => println!("file successfully downloaded: {}", p.to_string_lossy()),
-                Err(e) => Err(e).context("failed to download PDB")?,
-            };
-        }
-    } else if args.len() == 3 && args[1] == "filestore" {
-        /* List all files in the directory specified by args[2] */
-        let dir = Path::new(args[2].as_str());
-        let listing = recursive_listdir(&dir);
+                            if !fsname.exists() {
+                                let dir = fsname.parent().unwrap();
+                                tokio::fs::create_dir_all(dir)
+                                    .await
+                                    .expect("Failed to create filestore directory");
 
-        listing
-            .for_each(|entry| async {
-                if let Ok(e) = entry {
-                    if let Ok(fsname) = get_file_path(&e.path()) {
-                        let fsname = Path::new(&fsname);
-
-                        if !fsname.exists() {
-                            let dir = fsname.parent().unwrap();
-                            tokio::fs::create_dir_all(dir)
-                                .await
-                                .expect("Failed to create filestore directory");
-
-                            if let Err(err) = tokio::fs::copy(&e.path(), fsname).await {
-                                println!("Failed to copy file {:?}: {err:#}", &e.path());
+                                if let Err(err) = tokio::fs::copy(&e.path(), fsname).await {
+                                    println!("Failed to copy file {:?}: {err:#}", &e.path());
+                                }
                             }
                         }
                     }
-                }
-            })
-            .await;
-    } else if args.len() == 2 && args[1] == "clean" {
-        /* Ignores all errors during clean */
-        let _ = std::fs::remove_dir_all("symbols");
-        let _ = std::fs::remove_dir_all("filestore");
-        let _ = std::fs::remove_file("manifest");
-    } else {
-        /* Print out usage information */
-        print!("{}", USAGE);
+                })
+                .await;
+        }
+        _ => panic!("Unknown subcommand?"),
     }
 
     println!("Time elapsed: {:.3} seconds", it.elapsed().as_secs_f64());
