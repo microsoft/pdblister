@@ -124,9 +124,9 @@ impl FromStr for SymSrv {
         match directives.first() {
             // Simply exit the match statement if the directive is "SRV"
             Some(x) => {
-                if "SRV" == *x {
+                if x.eq_ignore_ascii_case("SRV") {
                     if directives.len() != 3 {
-                        anyhow::bail!("");
+                        anyhow::bail!("Unsupported server string form; only 'SRV*<CACHE_PATH>*<SYMBOL_SERVER>' supported");
                     }
 
                     // Alright, the directive is of the proper form. Return the server and filepath.
@@ -138,11 +138,13 @@ impl FromStr for SymSrv {
             }
 
             None => {
-                anyhow::bail!("Unsupported server string form");
+                anyhow::bail!("Unsupported server string form; only 'SRV*<CACHE_PATH>*<SYMBOL_SERVER>' supported");
             }
         };
 
-        unreachable!();
+        anyhow::bail!(
+            "Unsupported server string form; only 'SRV*<CACHE_PATH>*<SYMBOL_SERVER>' supported"
+        );
     }
 }
 
