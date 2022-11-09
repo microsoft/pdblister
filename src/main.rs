@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::Context;
+use clap::builder::PossibleValuesParser;
 use clap::{Arg, Command};
 use indicatif::{MultiProgress, ProgressStyle};
 
@@ -51,6 +52,12 @@ original PE source file from this filestore.
 To use this filestore simply merge the contents in with a symbol
 store/cache path. We keep it separate in this tool just to make it
 easier to only get PDBs if that's all you really want.";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MessageFormat {
+    Human,
+    Json,
+}
 
 /// Given a `path`, return a stream of all the files recursively found from
 /// that path.
@@ -383,7 +390,12 @@ async fn run() -> anyhow::Result<()> {
                         .required(true),
                     Arg::new("filepath")
                         .help("The PE file path")
-                        .required(true)
+                        .required(true),
+                    Arg::new("message-format")
+                        .long("message-format")
+                        .num_args(1)
+                        .default_value("human")
+                        .value_parser(PossibleValuesParser::new(["json", "human"]))        
                 ]),
             Command::new("filestore")
                 .about("Recursively searches a directory tree and caches all PEs in the current directory in a symbol cache layout")
@@ -394,8 +406,6 @@ async fn run() -> anyhow::Result<()> {
                         .required(true)
                 ]),
         ]).arg_required_else_help(true).get_matches();
-
-    let it = Instant::now();
 
     match matches.subcommand() {
         Some(("manifest", matches)) => {
@@ -479,24 +489,71 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         Some(("download_single", matches)) => {
-            let ctx = SymContext::new(matches.get_one::<String>("symsrv").unwrap())
-                .context("failed to create symbol context")?;
+            use serde_json::json;
 
-            // Resolve the PDB for the executable specified.
-            let e = ManifestEntry::from_str(
-                &get_pdb(Path::new(matches.get_one::<String>("filepath").unwrap()))
-                    .context("failed to resolve PDB hash")?,
-            )
-            .unwrap();
-            let info = SymFileInfo::RawHash(e.hash);
+            let message_format = match matches
+                .get_one::<String>("message-format")
+                .unwrap()
+                .as_str()
+            {
+                "human" => MessageFormat::Human,
+                "json" => MessageFormat::Json,
+                _ => unreachable!("clap gave us invalid message format?"),
+            };
 
-            if let Some(p) = ctx.find_file(&e.name, &info) {
-                println!("file already cached: {}", p.to_string_lossy());
-            } else {
-                match ctx.download_file(&e.name, &info).await {
-                    Ok(p) => println!("file successfully downloaded: {}", p.to_string_lossy()),
-                    Err(e) => Err(e).context("failed to download PDB")?,
+            let result: Result<(&'static str, PathBuf), anyhow::Error> = async {
+                let ctx = SymContext::new(matches.get_one::<String>("symsrv").unwrap())
+                    .context("failed to create symbol context")?;
+
+                // Resolve the PDB for the executable specified.
+                let e = ManifestEntry::from_str(
+                    &get_pdb(Path::new(matches.get_one::<String>("filepath").unwrap()))
+                        .context("failed to resolve PDB hash")?,
+                )
+                .unwrap();
+                let info = SymFileInfo::RawHash(e.hash);
+
+                let (message, path) = {
+                    if let Some(p) = ctx.find_file(&e.name, &info) {
+                        ("file already cached", p)
+                    } else {
+                        let path = ctx
+                            .download_file(&e.name, &info)
+                            .await
+                            .context("failed to download PDB")?;
+
+                        ("file successfully downloaded", path)
+                    }
                 };
+
+                Ok((message, path))
+            }
+            .await;
+
+            match result {
+                Ok((message, path)) => match message_format {
+                    MessageFormat::Human => {
+                        println!("{}: {}", message, path.to_string_lossy())
+                    }
+                    MessageFormat::Json => println!(
+                        "{}",
+                        json!({
+                            "status": "success",
+                            "message": message,
+                            "path": path.to_str().expect("symbol path was not valid utf-8")
+                        })
+                    ),
+                },
+                Err(e) => match message_format {
+                    MessageFormat::Human => println!("operation failed: {e:#}"),
+                    MessageFormat::Json => println!(
+                        "{}",
+                        json!({
+                            "status": "failed",
+                            "message": format!("{e:#}"),
+                        })
+                    ),
+                },
             }
         }
         Some(("filestore", matches)) => {
@@ -528,7 +585,6 @@ async fn run() -> anyhow::Result<()> {
         _ => panic!("Unknown subcommand?"),
     }
 
-    println!("Time elapsed: {:.3} seconds", it.elapsed().as_secs_f64());
     Ok(())
 }
 

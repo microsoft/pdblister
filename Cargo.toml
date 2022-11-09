@@ -21,6 +21,7 @@ thiserror = "1.0"
 url = "2.2"
 zerocopy = "0.6"
 clap = "4.0.22"
+serde_json = "1.0.87"
 
 [dependencies.tokio]
 version = "1.14.0"
