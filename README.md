@@ -57,19 +57,15 @@ Look how damn fast this stuff is!
 ```
 On an offline machine:
 
-PS C:\users\pleb\Downloads> .\pdblister.exe clean
-Time elapsed: 0 seconds
 PS C:\users\pleb\Downloads> .\pdblister.exe manifest C:\
 Generating file listing...
 Done!
 Parsed 398632 of 398632 files (23051 pdbs)
-Time elapsed: 104 seconds
 
 On an online machine:
 C:\dev\pdblister>cargo run --release download
     Finished release [optimized] target(s) in 0.0 secs
      Running `target\release\pdblister.exe download`
 Trying to download 23051 PDBs
-Time elapsed: 120 seconds
 ```
 
