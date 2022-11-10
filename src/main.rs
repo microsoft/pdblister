@@ -543,16 +543,19 @@ async fn run() -> anyhow::Result<()> {
                         })
                     ),
                 },
-                Err(e) => match message_format {
-                    MessageFormat::Human => println!("operation failed: {e:#}"),
-                    MessageFormat::Json => println!(
-                        "{}",
-                        json!({
-                            "status": "failed",
-                            "message": format!("{e:#}"),
-                        })
-                    ),
-                },
+                Err(e) => {
+                    match message_format {
+                        MessageFormat::Human => println!("operation failed: {e:#}"),
+                        MessageFormat::Json => println!(
+                            "{}",
+                            json!({
+                                "status": "failed",
+                                "message": format!("{e:#}"),
+                            })
+                        ),
+                    }
+                    std::process::exit(1);
+                }
             }
         }
         Some(("filestore", matches)) => {
