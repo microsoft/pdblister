@@ -20,7 +20,6 @@ use std::io::SeekFrom;
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::Instant;
 
 use futures::{stream, Stream, StreamExt};
 use indicatif::ProgressBar;
