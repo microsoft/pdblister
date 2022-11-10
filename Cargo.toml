@@ -20,6 +20,7 @@ reqwest = "0.11"
 thiserror = "1.0"
 url = "2.2"
 zerocopy = "0.6"
+clap = "4.0.22"
 
 [dependencies.tokio]
 version = "1.14.0"

@@ -10,62 +10,21 @@ infinite loops. Thus this is a stricter (and much faster) alternative.
 The output manifest is compatible with symchk. If you want to use symchk
 in lieu of this tool, use `symchk /im manifest /s <symbol path>`
 
+Note that we currently offer **no guarantee of stability** for the
+command-line options of this tool. If you need stability, please install a
+specific version.
+
 ![](docs/images/download.gif)
 
-# Usage
+# Quick Start
 
-Usage:
+```
+# On your target
+> cargo run --release -- manifest C:\Windows\System32
 
-    pdblister [manifest | download | download_single | filestore | clean] <filepath>
- 
-    === Create manifest === 
-    
-        pdblister manifest <filepath>
-
-        This command takes in a filepath to recursively search for files that
-        have a corresponding PDB. This creates a file called `manifest` which
-        is compatible with symchk.
-        
-        For example `pdblister manifest C:\\windows` will create `manifest`
-        containing all of the PDB signatures for all of the files in
-        C:\\windows.
-
-    === Download from manifest ===
-
-        pdblister download <sympath>
-
-        This command takes no parameters. It simply downloads all the PDBs
-        specified in the `manifest` file.
-
-    === Download single executable ===
-
-        pdblister download_single <sympath> <exepath>
-
-        This command will take a symbol server URL and executable path, and
-        use the symbol server to download the PDB file for the executable to
-        the cache directory.
-
-    === Create a file store ===
-
-        pdblister filestore <filepath>
-
-        This command recursively walks filepath to find all PEs. Any PE file
-        that is found is copied to the local directory 'filestore' using the
-        layout that symchk.exe uses to store normal files. This is used to
-        create a store of all PEs (such as .dlls), which can be used by a
-        kernel debugger to read otherwise paged out memory by downloading the
-        original PE source file from this filestore.
-
-        To use this filestore simply merge the contents in with a symbol
-        store/cache path. We keep it separate in this tool just to make it
-        easier to only get PDBs if that's all you really want.
-
-    === Clean ===
-
-        pdblister clean
-
-        This command removes the `manifest` file as well as the symbol folder
-        and the filestore folder
+# On an online machine
+> cargo run --release -- download SRV*C:\Symbols*https://msdl.microsoft.com/download/symbols
+```
 
 # Future
 
