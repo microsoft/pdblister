@@ -28,10 +28,9 @@ use tokio::{
     io::AsyncWriteExt,
 };
 
-use crate::symsrv::{DownloadError, DownloadStatus, SymContext, SymFileInfo};
+use symsrv::{nonblocking::SymContext, DownloadError, DownloadStatus, SymFileInfo};
 
 mod pe;
-mod symsrv;
 
 const MANIFEST_DESC: &str = "This command takes in a filepath to recursively search for files that
 have a corresponding PDB. This creates a file called `manifest` which
@@ -256,6 +255,7 @@ fn get_pdb(filename: &Path) -> anyhow::Result<String> {
     anyhow::bail!("Failed to find RSDS codeview directory")
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ManifestEntry {
     /// The PDB's name
