@@ -1,28 +1,4 @@
-[package]
-name = "pdblister"
-description = "Faster version of `symchk /om` for generating PDB manifests of offline machines"
-license-file = "LICENSE"
-homepage = "https://github.com/microsoft/pdblister"
-repository = "https://github.com/microsoft/pdblister"
-version = "0.0.2"
-authors = ["Gogs <gogs@fake.local>", "Justin Moore <jusmoore@microsoft.com>"]
-edition = "2018"
-
-[dependencies]
-anyhow = "1.0"
-base64 = "0.13"
-clap = "4.0.22"
-futures = "0.3"
-indicatif = { version = "0.17.1", features = ["tokio"] }
-mime = "0.3"
-pin-utils = "0.1"
-rand = "0.8"
-reqwest = "0.11"
-serde_json = "1.0.87"
-thiserror = "1.0"
-url = "2.2"
-zerocopy = "0.6"
-
-[dependencies.tokio]
-version = "1.14.0"
-features = ["full"]
+[workspace]
+members = [
+    "crates/*",
+]

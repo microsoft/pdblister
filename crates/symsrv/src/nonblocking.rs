@@ -9,9 +9,10 @@ extern crate indicatif;
 extern crate reqwest;
 extern crate tokio;
 
+use crate::{DownloadError, DownloadStatus, SymFileInfo};
+
 use anyhow::Context;
 use indicatif::{MultiProgress, ProgressBar};
-use thiserror::Error;
 
 use tokio::io::AsyncWriteExt;
 
@@ -32,69 +33,6 @@ mod style {
             .template("[{elapsed_precise}] {spinner} {bytes_per_sec:>10} {wide_msg}")
             .unwrap()
     }
-}
-
-/// Information about a symbol file resource.
-pub enum SymFileInfo {
-    Exe(ExeInfo),
-    Pdb(PdbInfo),
-    /// A raw symsrv-compatible hash.
-    RawHash(String),
-}
-
-impl ToString for SymFileInfo {
-    fn to_string(&self) -> String {
-        // The middle component of the resource's path on a symbol.
-        match self {
-            SymFileInfo::Exe(i) => i.to_string(),
-            SymFileInfo::Pdb(i) => i.to_string(),
-            SymFileInfo::RawHash(h) => h.clone(),
-        }
-    }
-}
-
-/// Executable file information relevant to a symbol server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExeInfo {
-    pub timestamp: u32,
-    pub size: u32,
-}
-
-impl ToString for ExeInfo {
-    fn to_string(&self) -> String {
-        format!("{:08x}{:x}", self.timestamp, self.size)
-    }
-}
-
-/// PDB file information relevant to a symbol server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PdbInfo {
-    pub guid: u128,
-    pub age: u32,
-}
-
-impl ToString for PdbInfo {
-    fn to_string(&self) -> String {
-        format!("{:032X}{:x}", self.guid, self.age)
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum DownloadError {
-    /// Server returned a 404 error. Try the next one.
-    #[error("Server returned 404 not found")]
-    FileNotFound,
-
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
-
-#[derive(Debug)]
-pub enum DownloadStatus {
-    /// The symbol file already exists in the filesystem.
-    AlreadyExists,
-    /// The symbol file was successfully downloaded from the remote server.
-    DownloadedOk,
 }
 
 enum RemoteFileType {
@@ -375,6 +313,7 @@ fn connect_pat(token: &str) -> anyhow::Result<reqwest::Client> {
 
     Ok(reqwest::Client::builder()
         .default_headers(headers)
+        .https_only(true)
         .build()?)
 }
 
@@ -395,9 +334,6 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
                         .map(|p| p.to_string())
                         .or_else(|| std::env::var("ADO_PAT").ok())
                         .context("PAT not specified for ADO")?;
-                    if url.scheme() != "https" {
-                        anyhow::bail!("This URL must be over https!");
-                    }
 
                     Ok(connect_pat(&pat)?)
                 }
