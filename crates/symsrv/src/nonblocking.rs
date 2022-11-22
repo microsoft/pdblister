@@ -2,14 +2,14 @@
 #![warn(clippy::all)]
 #![allow(clippy::needless_return)]
 
-use std::{path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 
 extern crate futures;
 extern crate indicatif;
 extern crate reqwest;
 extern crate tokio;
 
-use crate::{DownloadError, DownloadStatus, SymFileInfo};
+use crate::{DownloadError, DownloadStatus, SymFileInfo, SymSrvSpec};
 
 use anyhow::Context;
 use indicatif::{MultiProgress, ProgressBar};
@@ -42,75 +42,10 @@ enum RemoteFileType {
     Path(String),
 }
 
-/// A symbol server, defined by the user with the syntax `SRV*<cache_path>*<server_url>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SymSrv {
-    /// The base URL for a symbol server, e.g: `https://msdl.microsoft.com/download/symbols`
-    pub server_url: String,
-    /// The base path for the local symbol cache, e.g: `C:\Symcache`
-    pub cache_path: String,
-}
-
-impl FromStr for SymSrv {
-    type Err = anyhow::Error;
-
-    fn from_str(srv: &str) -> Result<Self, Self::Err> {
-        // Split the path out by asterisks.
-        let directives: Vec<&str> = srv.split('*').collect();
-
-        // Ensure that the path starts with `SRV*` - the only form we currently support.
-        match directives.first() {
-            // Simply exit the match statement if the directive is "SRV"
-            Some(x) => {
-                if x.eq_ignore_ascii_case("SRV") {
-                    if directives.len() != 3 {
-                        anyhow::bail!("Unsupported server string form; only 'SRV*<CACHE_PATH>*<SYMBOL_SERVER>' supported");
-                    }
-
-                    // Alright, the directive is of the proper form. Return the server and filepath.
-                    return Ok(SymSrv {
-                        server_url: directives[2].to_string(),
-                        cache_path: directives[1].to_string(),
-                    });
-                }
-            }
-
-            None => {
-                anyhow::bail!("Unsupported server string form; only 'SRV*<CACHE_PATH>*<SYMBOL_SERVER>' supported");
-            }
-        };
-
-        anyhow::bail!(
-            "Unsupported server string form; only 'SRV*<CACHE_PATH>*<SYMBOL_SERVER>' supported"
-        );
-    }
-}
-
-/// A list of symbol servers, defined by the user with a semicolon-separated list.
-pub struct SymSrvList(pub Box<[SymSrv]>);
-
-impl FromStr for SymSrvList {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let server_list: Vec<&str> = s.split(';').collect();
-        if server_list.is_empty() {
-            anyhow::bail!("Invalid server string");
-        }
-
-        let vec = server_list
-            .into_iter()
-            .map(|symstr| symstr.parse::<SymSrv>())
-            .collect::<anyhow::Result<Vec<_>>>()?;
-
-        Ok(SymSrvList(vec.into_boxed_slice()))
-    }
-}
-
 /// Attempt to download a single resource from a single symbol server.
 async fn download_single(
     client: &reqwest::Client,
-    srv: &SymSrv,
+    srv: &SymSrvSpec,
     mp: Option<&MultiProgress>,
     name: &str,
     hash: &str,
@@ -317,7 +252,7 @@ fn connect_pat(token: &str) -> anyhow::Result<reqwest::Client> {
         .build()?)
 }
 
-fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
+fn connect_server(srv: &SymSrvSpec) -> anyhow::Result<reqwest::Client> {
     // Determine if the URL is a known URL that requires OAuth2 authorization.
     use url::{Host, Url};
 
@@ -351,47 +286,39 @@ fn connect_server(srv: &SymSrv) -> anyhow::Result<reqwest::Client> {
     }
 }
 
-pub struct SymContext {
-    /// The list of connected servers.
-    servers: Box<[(SymSrv, reqwest::Client)]>,
+pub struct SymSrv {
+    spec: SymSrvSpec,
+    client: reqwest::Client,
 }
 
-impl SymContext {
-    pub fn new(srvstr: &str) -> anyhow::Result<Self> {
-        // First, parse the server string to figure out where we're supposed to fetch symbols from,
-        // and where to.
-        let servers = SymSrvList::from_str(srvstr)?;
+impl SymSrv {
+    /// Attempt to connect to the specified symbol server.
+    pub fn connect(spec: SymSrvSpec) -> anyhow::Result<Self> {
+        Ok(Self {
+            client: connect_server(&spec)?,
+            spec,
+        })
+    }
 
-        // Couple the servers with a reqwest client.
-        let servers = servers
-            .0
-            .iter()
-            .map(|s| (s.clone(), connect_server(s).unwrap()))
-            .collect::<Box<[_]>>();
-
-        Ok(Self { servers })
+    /// Retrieve the associated server specification from this connection.
+    pub fn spec(&self) -> SymSrvSpec {
+        self.spec.clone()
     }
 
     /// Attempt to find a single file in the symbol store associated with this context.
     ///
     /// If the file is found, its cache path will be returned.
     pub fn find_file(&self, name: &str, info: &SymFileInfo) -> Option<PathBuf> {
-        for (srv, _) in self.servers.iter() {
-            let hash = info.to_string();
+        let hash = info.to_string();
 
-            // The file should be in each cache directory under the following path:
-            // "<cache_dir>/<name>/<hash>/<name>"
-            let path = PathBuf::from(&srv.cache_path)
-                .join(name)
-                .join(hash)
-                .join(name);
+        // The file should be in each cache directory under the following path:
+        // "<cache_dir>/<name>/<hash>/<name>"
+        let path = PathBuf::from(&self.spec.cache_path)
+            .join(name)
+            .join(hash)
+            .join(name);
 
-            if path.exists() {
-                return Some(path);
-            }
-        }
-
-        None
+        path.exists().then_some(path)
     }
 
     /// Download and cache a single file in the symbol store associated with this context,
@@ -401,20 +328,11 @@ impl SymContext {
         name: &str,
         info: &SymFileInfo,
     ) -> Result<PathBuf, DownloadError> {
-        for (srv, client) in self.servers.iter() {
-            let hash = info.to_string();
+        let hash = info.to_string();
 
-            match download_single(client, srv, None, name, &hash).await {
-                Ok((_status, path)) => return Ok(path),
-                Err(e) => match e {
-                    // Try another server.
-                    DownloadError::FileNotFound => continue,
-                    e => return Err(e),
-                },
-            }
-        }
-
-        Err(DownloadError::FileNotFound)
+        download_single(&self.client, &self.spec, None, name, &hash)
+            .await
+            .map(|r| r.1)
     }
 
     /// Download (displaying progress) and cache a single file in the symbol store associated with this context,
@@ -425,19 +343,10 @@ impl SymContext {
         info: &SymFileInfo,
         mp: &MultiProgress,
     ) -> Result<PathBuf, DownloadError> {
-        for (srv, client) in self.servers.iter() {
-            let hash = info.to_string();
+        let hash = info.to_string();
 
-            match download_single(client, srv, Some(mp), name, &hash).await {
-                Ok((_status, path)) => return Ok(path),
-                Err(e) => match e {
-                    // Try another server.
-                    DownloadError::FileNotFound => continue,
-                    e => return Err(e),
-                },
-            }
-        }
-
-        Err(DownloadError::FileNotFound)
+        download_single(&self.client, &self.spec, Some(mp), name, &hash)
+            .await
+            .map(|r| r.1)
     }
 }
