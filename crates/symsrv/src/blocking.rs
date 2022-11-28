@@ -1,18 +1,18 @@
 use std::path::PathBuf;
 
-use crate::{nonblocking, DownloadError, SymFileInfo};
+use crate::{nonblocking, DownloadError, SymFileInfo, SymSrvSpec};
 
 use tokio::runtime::Runtime;
 
-pub struct SymContext {
-    inner: nonblocking::SymContext,
+pub struct SymSrv {
+    inner: nonblocking::SymSrv,
     rt: Runtime,
 }
 
-impl SymContext {
-    pub fn new(srvstr: &str) -> anyhow::Result<Self> {
+impl SymSrv {
+    pub fn new(spec: SymSrvSpec) -> anyhow::Result<Self> {
         Ok(Self {
-            inner: nonblocking::SymContext::new(srvstr)?,
+            inner: nonblocking::SymSrv::connect(spec)?,
             rt: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?,

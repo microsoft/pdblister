@@ -14,6 +14,7 @@ use anyhow::Context;
 use clap::builder::PossibleValuesParser;
 use clap::{Arg, Command};
 use indicatif::{MultiProgress, ProgressStyle};
+use symsrv::{SymSrvList, SymSrvSpec};
 
 use std::env;
 use std::io::SeekFrom;
@@ -28,7 +29,7 @@ use tokio::{
     io::AsyncWriteExt,
 };
 
-use symsrv::{nonblocking::SymContext, DownloadError, DownloadStatus, SymFileInfo};
+use symsrv::{nonblocking::SymSrv, DownloadError, DownloadStatus, SymFileInfo};
 
 mod pe;
 
@@ -283,8 +284,25 @@ impl FromStr for ManifestEntry {
     }
 }
 
+/// Attempt to connect to the servers described in the server string.
+fn connect_servers(srvstr: &str) -> anyhow::Result<Box<[SymSrv]>> {
+    let srvlist = SymSrvList::from_str(srvstr).context("failed to parse server list")?;
+
+    match srvlist
+        .0
+        .iter()
+        .map(|s| SymSrv::connect(s.clone()).map_err(|e| (s.clone(), e)))
+        .collect::<Result<Vec<_>, (SymSrvSpec, anyhow::Error)>>()
+    {
+        Ok(srv) => Ok(srv.into_boxed_slice()),
+        Err((s, e)) => {
+            anyhow::bail!("failed to connect to server {s}: {e:#}");
+        }
+    }
+}
+
 pub async fn download_manifest(srvstr: &str, files: Vec<String>) -> anyhow::Result<()> {
-    let ctx = SymContext::new(srvstr).context("failed to create symbol context")?;
+    let servers = connect_servers(srvstr)?;
 
     // http://patshaughnessy.net/2020/1/20/downloading-100000-files-using-async-rust
     // The following code is based off of the above blog post.
@@ -306,7 +324,7 @@ pub async fn download_manifest(srvstr: &str, files: Vec<String>) -> anyhow::Resu
         // into a Vec<Result<T, E>>
         files.into_iter().map(|line| {
             // Take explicit references to a few variables and move them into the async block.
-            let ctx = &ctx;
+            let servers = &servers;
             let pb = pb.clone();
             let m = &m;
 
@@ -316,14 +334,18 @@ pub async fn download_manifest(srvstr: &str, files: Vec<String>) -> anyhow::Resu
                 let e = ManifestEntry::from_str(&line).unwrap();
                 let info = SymFileInfo::RawHash(e.hash);
 
-                if ctx.find_file(&e.name, &info).is_some() {
-                    return Ok(DownloadStatus::AlreadyExists);
+                for srv in servers.iter() {
+                    if srv.find_file(&e.name, &info).is_some() {
+                        return Ok(DownloadStatus::AlreadyExists);
+                    }
+
+                    let _ = match srv.download_file_progress(&e.name, &info, m).await {
+                        Ok(_) => Ok(DownloadStatus::DownloadedOk),
+                        Err(e) => Err(e),
+                    };
                 }
 
-                match ctx.download_file_progress(&e.name, &info, m).await {
-                    Ok(_) => Ok(DownloadStatus::DownloadedOk),
-                    Err(e) => Err(e),
-                }
+                Err(DownloadError::FileNotFound)
             }
         }),
     )
@@ -501,8 +523,7 @@ async fn run() -> anyhow::Result<()> {
             };
 
             let result: Result<(&'static str, PathBuf), anyhow::Error> = async {
-                let ctx = SymContext::new(matches.get_one::<String>("symsrv").unwrap())
-                    .context("failed to create symbol context")?;
+                let servers = connect_servers(matches.get_one::<String>("symsrv").unwrap())?;
 
                 // Resolve the PDB for the executable specified.
                 let e = ManifestEntry::from_str(
@@ -512,20 +533,24 @@ async fn run() -> anyhow::Result<()> {
                 .unwrap();
                 let info = SymFileInfo::RawHash(e.hash);
 
-                let (message, path) = {
-                    if let Some(p) = ctx.find_file(&e.name, &info) {
-                        ("file already cached", p)
-                    } else {
-                        let path = ctx
-                            .download_file(&e.name, &info)
-                            .await
-                            .context("failed to download PDB")?;
+                for srv in servers.iter() {
+                    let (message, path) = {
+                        if let Some(p) = srv.find_file(&e.name, &info) {
+                            ("file already cached", p)
+                        } else {
+                            let path = srv
+                                .download_file(&e.name, &info)
+                                .await
+                                .context("failed to download PDB")?;
 
-                        ("file successfully downloaded", path)
-                    }
-                };
+                            ("file successfully downloaded", path)
+                        }
+                    };
 
-                Ok((message, path))
+                    return Ok((message, path));
+                }
+
+                anyhow::bail!("no server returned the PDB file")
             }
             .await;
 
