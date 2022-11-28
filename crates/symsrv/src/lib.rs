@@ -137,3 +137,29 @@ impl FromStr for SymSrvList {
         Ok(SymSrvList(vec.into_boxed_slice()))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn symsrv_spec() {
+        assert_eq!(
+            SymSrvSpec::from_str("SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols")
+                .unwrap(),
+            SymSrvSpec {
+                server_url: "https://msdl.microsoft.com/download/symbols".to_string(),
+                cache_path: "C:\\Symbols".to_string(),
+            }
+        );
+
+        assert_eq!(
+            SymSrvSpec::from_str("srv*C:\\Symbols*https://msdl.microsoft.com/download/symbols")
+                .unwrap(),
+            SymSrvSpec {
+                server_url: "https://msdl.microsoft.com/download/symbols".to_string(),
+                cache_path: "C:\\Symbols".to_string(),
+            }
+        );
+    }
+}
