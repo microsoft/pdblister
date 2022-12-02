@@ -54,13 +54,13 @@ async fn download_single(
     let file_rel_folder = format!("{}/{}", name, hash);
 
     // The name of the file on the local filesystem
-    let file_name = format!("{}/{}/{}", srv.cache_path, file_rel_folder, name);
+    let file_name = srv.cache_path.join(&file_rel_folder).join(name);
     // The path to the file's folder on the remote server
     let file_folder_url = format!("{}/{}", srv.server_url, file_rel_folder);
 
     // Attempt to remove any existing temporary files first.
     // Silently ignore failures since we don't care if this fails.
-    let file_name_tmp = format!("{}.tmp", file_name);
+    let file_name_tmp = file_name.with_extension("pdb.tmp");
     let _ = tokio::fs::remove_file(&file_name_tmp).await;
 
     // Check to see if the file already exists. If so, skip it.
@@ -128,7 +128,7 @@ async fn download_single(
     };
 
     // Create the directory tree.
-    tokio::fs::create_dir_all(format!("{}/{}", srv.cache_path, file_rel_folder))
+    tokio::fs::create_dir_all(srv.cache_path.join(file_rel_folder))
         .await
         .context("failed to create symbol directory tree")?;
 
