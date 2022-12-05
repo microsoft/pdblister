@@ -4,6 +4,7 @@ use crate::{nonblocking, DownloadError, SymFileInfo, SymSrvSpec};
 
 use tokio::runtime::Runtime;
 
+#[derive(Debug)]
 pub struct SymSrv {
     inner: nonblocking::SymSrv,
     rt: Runtime,

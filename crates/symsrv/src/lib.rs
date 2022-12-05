@@ -5,6 +5,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 /// Information about a symbol file resource.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SymFileInfo {
     Exe(ExeInfo),
     Pdb(PdbInfo),
@@ -24,7 +25,7 @@ impl ToString for SymFileInfo {
 }
 
 /// Executable file information relevant to a symbol server.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ExeInfo {
     pub timestamp: u32,
     pub size: u32,
@@ -37,7 +38,7 @@ impl ToString for ExeInfo {
 }
 
 /// PDB file information relevant to a symbol server.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PdbInfo {
     pub guid: u128,
     pub age: u32,
@@ -59,7 +60,7 @@ pub enum DownloadError {
     Other(#[from] anyhow::Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadStatus {
     /// The symbol file already exists in the filesystem.
     AlreadyExists,
@@ -118,6 +119,7 @@ impl std::fmt::Display for SymSrvSpec {
 }
 
 /// A list of symbol servers, defined by the user with a semicolon-separated list.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymSrvList(pub Box<[SymSrvSpec]>);
 
 impl FromStr for SymSrvList {

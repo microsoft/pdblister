@@ -286,6 +286,7 @@ fn connect_server(srv: &SymSrvSpec) -> anyhow::Result<reqwest::Client> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SymSrv {
     spec: SymSrvSpec,
     client: reqwest::Client,
