@@ -1,8 +1,8 @@
 # Summary
 
-This is a tiny project to be a quick alternative to symchk for generating
-manifests. This mimics symchk of the form `symchk /om manifest /r <path>`
-but only looks for MZ/PE files.
+This is a tiny **unofficial** project meant to be a quick alternative to symchk for
+miscellaneous tasks, such as generating manifests and downloading symbols. This
+mimics symchk of the form `symchk /om manifest /r <path>` but only looks for MZ/PE files.
 
 Due to symchk doing some weird things it can often crash or get stuck in
 infinite loops. Thus this is a stricter (and much faster) alternative.
@@ -10,9 +10,8 @@ infinite loops. Thus this is a stricter (and much faster) alternative.
 The output manifest is compatible with symchk. If you want to use symchk
 in lieu of this tool, use `symchk /im manifest /s <symbol path>`
 
-Note that we currently offer **no guarantee of stability** for the
-command-line options of this tool. If you need stability, please install a
-specific version.
+Note that we currently offer **no guarantee of stability** for this tool.
+If you need stability (e.g. for automation), please pin your install to a specific revision.
 
 ![](docs/images/download.gif)
 
@@ -24,6 +23,11 @@ specific version.
 
 # On an online machine
 > cargo run --release -- download SRV*C:\Symbols*https://msdl.microsoft.com/download/symbols
+```
+
+## Downloading a single PDB file
+```
+> cargo run --release -- download_single SRV*C:\Symbols*https://msdl.microsoft.com/download/symbols C:\Windows\System32\notepad.exe
 ```
 
 # Future
