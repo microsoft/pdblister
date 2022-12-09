@@ -121,7 +121,7 @@ fn get_pdb_path<P: AsRef<Path>>(pdbname: P) -> anyhow::Result<PathBuf> {
         .context("failed to find DBI stream")?;
 
     let guid = pdbi.guid;
-    let age = dbi.age().unwrap_or(pdbi.age); // FIXME: Is this right?
+    let age = dbi.age().unwrap_or(pdbi.age);
 
     Ok(file_name
         .join(format!("{:032X}{:x}", guid.as_u128(), age))
