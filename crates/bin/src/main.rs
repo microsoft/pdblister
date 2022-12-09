@@ -339,9 +339,9 @@ pub async fn download_manifest(srvstr: &str, files: Vec<String>) -> anyhow::Resu
                         return Ok(DownloadStatus::AlreadyExists);
                     }
 
-                    let _ = match srv.download_file_progress(&e.name, &info, m).await {
-                        Ok(_) => Ok(DownloadStatus::DownloadedOk),
-                        Err(e) => Err(e),
+                    match srv.download_file_progress(&e.name, &info, m).await {
+                        Ok(_) => return Ok(DownloadStatus::DownloadedOk),
+                        Err(_e) => {}
                     };
                 }
 
