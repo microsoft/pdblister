@@ -13,6 +13,7 @@ anyhow = "1.0"
 clap = "4.0.22"
 futures = "0.3"
 indicatif = { version = "0.17.1", features = ["tokio"] }
+pdb = "0.8.0"
 rand = "0.8"
 serde_json = "1.0.87"
 zerocopy = "0.6"

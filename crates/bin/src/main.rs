@@ -42,11 +42,20 @@ containing all of the PDB signatures for all of the files in
 C:\\windows.";
 
 const FILESTORE_DESC: &str = "This command recursively walks filepath to find all PEs. Any PE file
-that is found is copied to the local directory 'filestore' using the
+that is found is copied to the local directory 'targetpath' using the
 layout that symchk.exe uses to store normal files. This is used to
 create a store of all PEs (such as .dlls), which can be used by a
 kernel debugger to read otherwise paged out memory by downloading the
 original PE source file from this filestore.
+
+To use this filestore simply merge the contents in with a symbol
+store/cache path. We keep it separate in this tool just to make it
+easier to only get PDBs if that's all you really want.";
+
+const PDBSTORE_DESC: &str = "This command recursively walks filepath to find all PDBs. Any PDB file
+that is found is copied to the local directory 'targetpath' using the
+same layout as symchk.exe. This is used to create a store of all PDBs
+which can be used by a kernel debugger to resolve symbols.
 
 To use this filestore simply merge the contents in with a symbol
 store/cache path. We keep it separate in this tool just to make it
@@ -90,6 +99,35 @@ fn recursive_listdir(
     .flatten()
 }
 
+fn get_pdb_path<P: AsRef<Path>>(pdbname: P) -> anyhow::Result<PathBuf> {
+    use pdb::PDB;
+
+    let file_name = Path::new(
+        pdbname
+            .as_ref()
+            .file_name()
+            .context("no filename component on path")?,
+    );
+
+    let f = std::fs::File::open(&pdbname).context("failed to open file")?;
+    let mut pdb = PDB::open(f).context("failed to parse PDB")?;
+
+    // Query the GUID and age.
+    let pdbi = pdb
+        .pdb_information()
+        .context("failed to find PDB information stream")?;
+    let dbi = pdb
+        .debug_information()
+        .context("failed to find DBI stream")?;
+
+    let guid = pdbi.guid;
+    let age = dbi.age().unwrap_or(pdbi.age);
+
+    Ok(file_name
+        .join(format!("{:032X}{:x}", guid.as_u128(), age))
+        .join(file_name))
+}
+
 fn get_file_path(filename: &Path) -> anyhow::Result<String> {
     let (_, _, pe_header, image_size, _) = pe::parse_pe(filename)?;
 
@@ -100,7 +138,7 @@ fn get_file_path(filename: &Path) -> anyhow::Result<String> {
         .context("Failed to convert file name")?;
 
     let filestr = format!(
-        "filestore/{}/{:08x}{:x}/{}",
+        "{}/{:08x}{:x}/{}",
         filename,
         { pe_header.timestamp },
         image_size,
@@ -424,6 +462,20 @@ async fn run() -> anyhow::Result<()> {
                 .args([
                     Arg::new("filepath")
                         .help("The root of the directory tree to search for PEs")
+                        .required(true),
+                    Arg::new("targetpath")
+                        .help("The target directory to stash PEs in")
+                        .required(true)
+                ]),
+            Command::new("pdbstore")
+                .about("Recursively searches a directory tree and caches all PDBs in the current directory in a symbol cache layout")
+                .long_about(PDBSTORE_DESC)
+                .args([
+                    Arg::new("filepath")
+                        .help("The root of the directory tree to search for PDBs")
+                        .required(true),
+                    Arg::new("targetpath")
+                        .help("The target directory to stash PDBs in")
                         .required(true)
                 ]),
         ]).arg_required_else_help(true).get_matches();
@@ -585,14 +637,42 @@ async fn run() -> anyhow::Result<()> {
         }
         Some(("filestore", matches)) => {
             /* List all files in the directory specified by args[2] */
-            let dir = Path::new(matches.get_one::<String>("fielpath").unwrap());
+            let dir = Path::new(matches.get_one::<String>("filepath").unwrap());
+            let target = Path::new(matches.get_one::<String>("targetpath").unwrap());
             let listing = recursive_listdir(&dir);
 
             listing
                 .for_each(|entry| async {
                     if let Ok(e) = entry {
                         if let Ok(fsname) = get_file_path(&e.path()) {
-                            let fsname = Path::new(&fsname);
+                            let fsname = target.join(&fsname);
+
+                            if !fsname.exists() {
+                                let dir = fsname.parent().unwrap();
+                                tokio::fs::create_dir_all(dir)
+                                    .await
+                                    .expect("Failed to create filestore directory");
+
+                                if let Err(err) = tokio::fs::copy(&e.path(), fsname).await {
+                                    println!("Failed to copy file {:?}: {err:#}", &e.path());
+                                }
+                            }
+                        }
+                    }
+                })
+                .await;
+        }
+        Some(("pdbstore", matches)) => {
+            /* List all files in the directory specified by args[2] */
+            let dir = Path::new(matches.get_one::<String>("filepath").unwrap());
+            let target = Path::new(matches.get_one::<String>("targetpath").unwrap());
+            let listing = recursive_listdir(&dir);
+
+            listing
+                .for_each(|entry| async {
+                    if let Ok(e) = entry {
+                        if let Ok(fsname) = get_pdb_path(&e.path()) {
+                            let fsname = target.join(&fsname);
 
                             if !fsname.exists() {
                                 let dir = fsname.parent().unwrap();
