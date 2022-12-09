@@ -261,14 +261,12 @@ fn connect_server(srv: &SymSrvSpec) -> anyhow::Result<reqwest::Client> {
         Some(Host::Domain(d)) => {
             match d {
                 // Azure DevOps
-                d if d.ends_with("artifacts.visualstudio.com") => {
-                    // Try and find the PAT for ADO, either from basic authentication or an ADO_PAT
-                    // environment variable.
+                d if d.ends_with("artifacts.visualstudio.com") || d.ends_with("dev.azure.com") => {
+                    // Try and find the PAT for ADO from URL basic authentication.
                     let pat = url
                         .password()
                         .map(|p| p.to_string())
-                        .or_else(|| std::env::var("ADO_PAT").ok())
-                        .context("PAT not specified for ADO")?;
+                        .context("ADO requires a PAT for authentication")?;
 
                     Ok(connect_pat(&pat)?)
                 }
