@@ -1,7 +1,7 @@
 pub mod blocking;
 pub mod nonblocking;
 
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 use thiserror::Error;
 
 /// Information about a symbol file resource.
@@ -74,7 +74,7 @@ pub struct SymSrvSpec {
     /// The base URL for a symbol server, e.g: `https://msdl.microsoft.com/download/symbols`
     pub server_url: String,
     /// The base path for the local symbol cache, e.g: `C:\Symcache`
-    pub cache_path: String,
+    pub cache_path: PathBuf,
 }
 
 impl FromStr for SymSrvSpec {
@@ -96,7 +96,7 @@ impl FromStr for SymSrvSpec {
                     // Alright, the directive is of the proper form. Return the server and filepath.
                     return Ok(SymSrvSpec {
                         server_url: directives[2].to_string(),
-                        cache_path: directives[1].to_string(),
+                        cache_path: directives[1].into(),
                     });
                 }
             }
@@ -114,7 +114,7 @@ impl FromStr for SymSrvSpec {
 
 impl std::fmt::Display for SymSrvSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SRV*{}*{}", self.cache_path, self.server_url)
+        write!(f, "SRV*{}*{}", self.cache_path.display(), self.server_url)
     }
 }
 
@@ -151,7 +151,7 @@ mod test {
                 .unwrap(),
             SymSrvSpec {
                 server_url: "https://msdl.microsoft.com/download/symbols".to_string(),
-                cache_path: "C:\\Symbols".to_string(),
+                cache_path: "C:\\Symbols".into(),
             }
         );
 
@@ -160,7 +160,7 @@ mod test {
                 .unwrap(),
             SymSrvSpec {
                 server_url: "https://msdl.microsoft.com/download/symbols".to_string(),
-                cache_path: "C:\\Symbols".to_string(),
+                cache_path: "C:\\Symbols".into(),
             }
         );
     }
