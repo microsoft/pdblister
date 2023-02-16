@@ -256,7 +256,8 @@ fn connect_server(srv: &SymSrvSpec) -> anyhow::Result<reqwest::Client> {
     // Determine if the URL is a known URL that requires OAuth2 authorization.
     use url::{Host, Url};
 
-    let url = Url::parse(&srv.server_url)?;
+    let url = Url::parse(&srv.server_url).context("invalid URL")?;
+    println!("{url:?}");
     match url.host() {
         Some(Host::Domain(d)) => {
             match d {

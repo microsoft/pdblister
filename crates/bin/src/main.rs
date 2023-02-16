@@ -333,9 +333,7 @@ fn connect_servers(srvstr: &str) -> anyhow::Result<Box<[SymSrv]>> {
         .collect::<Result<Vec<_>, (SymSrvSpec, anyhow::Error)>>()
     {
         Ok(srv) => Ok(srv.into_boxed_slice()),
-        Err((s, e)) => {
-            anyhow::bail!("failed to connect to server {s}: {e:#}");
-        }
+        Err((s, e)) => Err(e.context(format!("failed to connect to server {s}"))),
     }
 }
 
@@ -558,7 +556,7 @@ async fn run() -> anyhow::Result<()> {
 
             match download_manifest(srvstr, lines).await {
                 Ok(_) => println!("Success!"),
-                Err(e) => println!("Failed: {:#}", e),
+                Err(e) => println!("Failed: {:?}", e),
             }
         }
         Some(("download_single", matches)) => {
@@ -622,7 +620,7 @@ async fn run() -> anyhow::Result<()> {
                 },
                 Err(e) => {
                     match message_format {
-                        MessageFormat::Human => println!("operation failed: {e:#}"),
+                        MessageFormat::Human => println!("operation failed: {e:?}"),
                         MessageFormat::Json => println!(
                             "{}",
                             json!({
