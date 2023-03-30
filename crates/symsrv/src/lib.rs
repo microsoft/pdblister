@@ -53,8 +53,11 @@ impl ToString for PdbInfo {
 #[derive(Error, Debug)]
 pub enum DownloadError {
     /// Server returned a 404 error. Try the next one.
-    #[error("Server returned 404 not found")]
+    #[error("server returned 404 not found")]
     FileNotFound,
+
+    #[error("error requesting file")]
+    Request(#[from] reqwest::Error),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
