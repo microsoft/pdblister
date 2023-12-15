@@ -11,12 +11,10 @@
 #![forbid(unsafe_code)]
 
 use anyhow::Context;
-use clap::builder::PossibleValuesParser;
-use clap::{Arg, Command};
+use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{MultiProgress, ProgressStyle};
 use symsrv::{SymSrvList, SymSrvSpec};
 
-use std::env;
 use std::io::SeekFrom;
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -33,35 +31,7 @@ use symsrv::{nonblocking::SymSrv, DownloadError, DownloadStatus, SymFileInfo};
 
 mod pe;
 
-const MANIFEST_DESC: &str = "This command takes in a filepath to recursively search for files that
-have a corresponding PDB. This creates a file called `manifest` which
-is compatible with symchk.
-
-For example `pdblister manifest C:\\windows` will create `manifest`
-containing all of the PDB signatures for all of the files in
-C:\\windows.";
-
-const FILESTORE_DESC: &str = "This command recursively walks filepath to find all PEs. Any PE file
-that is found is copied to the local directory 'targetpath' using the
-layout that symchk.exe uses to store normal files. This is used to
-create a store of all PEs (such as .dlls), which can be used by a
-kernel debugger to read otherwise paged out memory by downloading the
-original PE source file from this filestore.
-
-To use this filestore simply merge the contents in with a symbol
-store/cache path. We keep it separate in this tool just to make it
-easier to only get PDBs if that's all you really want.";
-
-const PDBSTORE_DESC: &str = "This command recursively walks filepath to find all PDBs. Any PDB file
-that is found is copied to the local directory 'targetpath' using the
-same layout as symchk.exe. This is used to create a store of all PDBs
-which can be used by a kernel debugger to resolve symbols.
-
-To use this filestore simply merge the contents in with a symbol
-store/cache path. We keep it separate in this tool just to make it
-easier to only get PDBs if that's all you really want.";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum MessageFormat {
     Human,
     Json,
@@ -417,72 +387,87 @@ pub async fn download_manifest(srvstr: &str, files: Vec<String>) -> anyhow::Resu
     Ok(())
 }
 
-async fn run() -> anyhow::Result<()> {
-    let matches = Command::new("pdblister")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about("This tool lets you quickly download PDBs from a symbol server")
-        .subcommands([
-            Command::new("manifest")
-                .about("Recursively searches a directory tree and generate a manifest file containing PDB hashes for all executables found")
-                .long_about(MANIFEST_DESC)
-                .args([
-                    Arg::new("filepath")
-                        .help("The root of the directory tree to search for PEs")
-                        .required(true)
-                ]),
-            Command::new("download")
-                .about("Downloads all the PDBs specified in the manifest file named `manifest`")
-                .args([
-                    Arg::new("symsrv")
-                        .help("The symbol server URL")
-                        .long_help("The URL to download symbols from. For example, `SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols`")
-                        .required(true)
-                ]),
-            Command::new("download_single")
-                .about("Downloads a PDB file corresponding to a single PE file")
-                .args([
-                    Arg::new("symsrv")
-                        .help("The symbol server URL")
-                        .long_help("The URL to download symbols from. For example, `SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols`")
-                        .required(true),
-                    Arg::new("filepath")
-                        .help("The PE file path")
-                        .required(true),
-                    Arg::new("message-format")
-                        .long("message-format")
-                        .num_args(1)
-                        .default_value("human")
-                        .value_parser(PossibleValuesParser::new(["json", "human"]))        
-                ]),
-            Command::new("filestore")
-                .about("Recursively searches a directory tree and caches all PEs in the current directory in a symbol cache layout")
-                .long_about(FILESTORE_DESC)
-                .args([
-                    Arg::new("filepath")
-                        .help("The root of the directory tree to search for PEs")
-                        .required(true),
-                    Arg::new("targetpath")
-                        .help("The target directory to stash PEs in")
-                        .required(true)
-                ]),
-            Command::new("pdbstore")
-                .about("Recursively searches a directory tree and caches all PDBs in the current directory in a symbol cache layout")
-                .long_about(PDBSTORE_DESC)
-                .args([
-                    Arg::new("filepath")
-                        .help("The root of the directory tree to search for PDBs")
-                        .required(true),
-                    Arg::new("targetpath")
-                        .help("The target directory to stash PDBs in")
-                        .required(true)
-                ]),
-        ]).arg_required_else_help(true).get_matches();
+/// This tool lets you quickly download PDBs from a symbol server
+#[derive(Parser)]
+#[command(author, version, about)]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
 
-    match matches.subcommand() {
-        Some(("manifest", matches)) => {
+#[derive(Subcommand, Clone, Debug)]
+enum Command {
+    /// Recursively searches a directory tree and generate a manifest file containing PDB hashes for all executables found
+    ///
+    /// This command takes in a filepath to recursively search for files that
+    /// have a corresponding PDB. This creates a file called `manifest` which
+    /// is compatible with symchk.
+    ///
+    /// For example `pdblister manifest C:\\windows` will create `manifest`
+    /// containing all of the PDB signatures for all of the files in
+    /// C:\\windows.
+    Manifest {
+        /// The root of the directory tree to search for PEs
+        filepath: PathBuf,
+    },
+    /// Downloads all the PDBs specified in the manifest file named `manifest`
+    Download {
+        /// The symbol server URL
+        symsrv: String,
+    },
+    /// Downloads a PDB file corresponding to a single PE file
+    DownloadSingle {
+        /// The symbol server URL
+        symsrv: String,
+        /// The PE file path
+        filepath: PathBuf,
+        /// The format to print the message in
+        message_format: MessageFormat,
+    },
+    /// Recursively searches a directory tree and caches all PEs in the current directory in a symbol cache layout
+    ///
+    /// This command recursively walks filepath to find all PEs. Any PE file
+    /// that is found is copied to the local directory 'targetpath' using the
+    /// layout that symchk.exe uses to store normal files. This is used to
+    /// create a store of all PEs (such as .dlls), which can be used by a
+    /// kernel debugger to read otherwise paged out memory by downloading the
+    /// original PE source file from this filestore.
+    ///
+    /// To use this filestore simply merge the contents in with a symbol
+    /// store/cache path. We keep it separate in this tool just to make it
+    /// easier to only get PDBs if that's all you really want.
+    Filestore {
+        /// The root of the directory tree to search for PEs
+        filepath: PathBuf,
+        /// The target directory to stash PEs in
+        targetpath: PathBuf,
+    },
+    /// Recursively searches a directory tree and caches all PDBs in the current directory in a symbol cache layout
+    ///
+    /// This command recursively walks filepath to find all PDBs. Any PDB file
+    /// that is found is copied to the local directory 'targetpath' using the
+    /// same layout as symchk.exe. This is used to create a store of all PDBs
+    /// which can be used by a kernel debugger to resolve symbols.
+    ///
+    /// To use this filestore simply merge the contents in with a symbol
+    /// store/cache path. We keep it separate in this tool just to make it
+    /// easier to only get PDBs if that's all you really want.
+    Pdbstore {
+        /// The root of the directory tree to search for PDBs
+        filepath: PathBuf,
+        /// The target directory to stash PDBs in
+        targetpath: PathBuf,
+    },
+}
+
+async fn run() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    match &args.command {
+        Command::Manifest { filepath } => {
             /* List all files in the directory specified by args[2] */
-            let dir = Path::new(matches.get_one::<String>("filepath").unwrap());
-            let listing: Vec<Result<DirEntry, io::Error>> = recursive_listdir(dir).collect().await;
+            let listing: Vec<Result<DirEntry, io::Error>> =
+                recursive_listdir(filepath).collect().await;
 
             let pb = ProgressBar::new(listing.len() as u64);
 
@@ -529,9 +514,7 @@ async fn run() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(("download", matches)) => {
-            let srvstr = matches.get_one::<String>("symsrv").unwrap();
-
+        Command::Download { symsrv } => {
             /* Read the entire manifest file into a string */
             let mut buf = String::new();
             let mut fd =
@@ -554,31 +537,24 @@ async fn run() -> anyhow::Result<()> {
 
             println!("Deduped manifest has {} PDBs", lines.len());
 
-            match download_manifest(srvstr, lines).await {
+            match download_manifest(symsrv, lines).await {
                 Ok(_) => println!("Success!"),
                 Err(e) => println!("Failed: {:?}", e),
             }
         }
-        Some(("download_single", matches)) => {
+        Command::DownloadSingle {
+            symsrv,
+            filepath,
+            message_format,
+        } => {
             use serde_json::json;
 
-            let message_format = match matches
-                .get_one::<String>("message-format")
-                .unwrap()
-                .as_str()
-            {
-                "human" => MessageFormat::Human,
-                "json" => MessageFormat::Json,
-                _ => unreachable!("clap gave us invalid message format?"),
-            };
-
             let result: Result<(&'static str, PathBuf), anyhow::Error> = async {
-                let servers = connect_servers(matches.get_one::<String>("symsrv").unwrap())?;
+                let servers = connect_servers(symsrv)?;
 
                 // Resolve the PDB for the executable specified.
                 let e = ManifestEntry::from_str(
-                    &get_pdb(Path::new(matches.get_one::<String>("filepath").unwrap()))
-                        .context("failed to resolve PDB hash")?,
+                    &get_pdb(filepath).context("failed to resolve PDB hash")?,
                 )
                 .unwrap();
                 let info = SymFileInfo::RawHash(e.hash);
@@ -633,10 +609,13 @@ async fn run() -> anyhow::Result<()> {
                 }
             }
         }
-        Some(("filestore", matches)) => {
+        Command::Filestore {
+            filepath,
+            targetpath,
+        } => {
             /* List all files in the directory specified by args[2] */
-            let dir = Path::new(matches.get_one::<String>("filepath").unwrap());
-            let target = Path::new(matches.get_one::<String>("targetpath").unwrap());
+            let dir = Path::new(filepath);
+            let target = Path::new(targetpath);
             let listing = recursive_listdir(&dir);
 
             listing
@@ -660,17 +639,18 @@ async fn run() -> anyhow::Result<()> {
                 })
                 .await;
         }
-        Some(("pdbstore", matches)) => {
+        Command::Pdbstore {
+            filepath,
+            targetpath,
+        } => {
             /* List all files in the directory specified by args[2] */
-            let dir = Path::new(matches.get_one::<String>("filepath").unwrap());
-            let target = Path::new(matches.get_one::<String>("targetpath").unwrap());
-            let listing = recursive_listdir(&dir);
+            let listing = recursive_listdir(&filepath);
 
             listing
                 .for_each(|entry| async {
                     if let Ok(e) = entry {
                         if let Ok(fsname) = get_pdb_path(&e.path()) {
-                            let fsname = target.join(&fsname);
+                            let fsname = targetpath.join(&fsname);
 
                             if !fsname.exists() {
                                 let dir = fsname.parent().unwrap();
@@ -687,7 +667,6 @@ async fn run() -> anyhow::Result<()> {
                 })
                 .await;
         }
-        _ => panic!("Unknown subcommand?"),
     }
 
     Ok(())
