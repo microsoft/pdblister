@@ -773,14 +773,18 @@ name = "pdblister"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "base64 0.13.1",
  "clap",
  "futures",
  "indicatif",
+ "mime",
  "pdb",
  "rand",
+ "reqwest",
  "serde_json",
- "symsrv",
+ "thiserror",
  "tokio",
+ "url",
  "zerocopy",
 ]
 
@@ -1076,21 +1080,6 @@ name = "strsim"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
-
-[[package]]
-name = "symsrv"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.13.1",
- "futures",
- "indicatif",
- "mime",
- "reqwest",
- "thiserror",
- "tokio",
- "url",
-]
 
 [[package]]
 name = "syn"

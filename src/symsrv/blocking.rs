@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{nonblocking, DownloadError, SymFileInfo, SymSrvSpec};
+use super::{nonblocking, DownloadError, SymFileInfo, SymSrvSpec};
 
 use tokio::runtime::Runtime;
 
