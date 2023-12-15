@@ -10,7 +10,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
-clap = "4.0.22"
+clap = { version = "4.4.11", features = ["derive"] }
 futures = "0.3"
 indicatif = { version = "0.17.2", features = ["tokio"] }
 pdb = "0.8.0"
