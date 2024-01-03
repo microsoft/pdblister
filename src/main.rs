@@ -30,6 +30,7 @@ use tokio::{
 use symsrv::{nonblocking::SymSrv, DownloadError, DownloadStatus, SymFileInfo};
 
 mod pe;
+mod symsrv;
 
 #[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum MessageFormat {
