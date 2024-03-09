@@ -1,6 +1,6 @@
-#![allow(unknown_lints)]
-#![warn(clippy::all)]
-#![allow(clippy::needless_return)]
+// #![allow(unknown_lints)]
+// #![warn(clippy::all)]
+// #![allow(clippy::needless_return)]
 
 use std::path::PathBuf;
 

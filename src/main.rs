@@ -30,6 +30,7 @@ use tokio::{
 use symsrv::{nonblocking::SymSrv, DownloadError, DownloadStatus, SymFileInfo};
 
 mod pe;
+#[allow(dead_code)]
 mod symsrv;
 
 #[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -401,20 +402,24 @@ enum Command {
     /// Recursively searches a directory tree and generate a manifest file containing PDB hashes for all executables found
     ///
     /// This command takes in a filepath to recursively search for files that
-    /// have a corresponding PDB. This creates a file called `manifest` which
-    /// is compatible with symchk.
+    /// have a corresponding PDB. This creates a file which is compatible with
+    /// symchk.
     ///
-    /// For example `pdblister manifest C:\\windows` will create `manifest`
+    /// For example `pdblister manifest C:\windows` will create `manifest`
     /// containing all of the PDB signatures for all of the files in
-    /// C:\\windows.
+    /// C:\windows.
     Manifest {
         /// The root of the directory tree to search for PEs
         filepath: PathBuf,
+        /// The destination manifest path
+        manifest: Option<PathBuf>,
     },
-    /// Downloads all the PDBs specified in the manifest file named `manifest`
+    /// Downloads all the PDBs specified in the manifest file
     Download {
         /// The symbol server URL
         symsrv: String,
+        /// The manifest path
+        manifest: Option<PathBuf>,
     },
     /// Downloads a PDB file corresponding to a single PE file
     DownloadSingle {
@@ -459,13 +464,25 @@ enum Command {
         /// The target directory to stash PDBs in
         targetpath: PathBuf,
     },
+    /// Various information-related subcommands
+    #[command(subcommand)]
+    Info(InfoCommand),
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum InfoCommand {
+    /// Dumps out the hash of the corresponding PDB file for a PE file
+    Pdbhash {
+        /// The path to the PE file to dump the PDB hash for
+        filepath: PathBuf,
+    },
 }
 
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    match &args.command {
-        Command::Manifest { filepath } => {
+    match args.command {
+        Command::Manifest { filepath, manifest } => {
             /* List all files in the directory specified by args[2] */
             let listing: Vec<Result<DirEntry, io::Error>> =
                 recursive_listdir(filepath).collect().await;
@@ -502,7 +519,8 @@ async fn run() -> anyhow::Result<()> {
                 })
                 .collect();
 
-            let mut output_file = tokio::fs::File::create("manifest")
+            let manifest_path = manifest.unwrap_or(PathBuf::from("manifest"));
+            let mut output_file = tokio::fs::File::create(manifest_path)
                 .await
                 .context("Failed to create output manifest file")?;
 
@@ -515,12 +533,12 @@ async fn run() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Download { symsrv } => {
+        Command::Download { manifest, symsrv } => {
             /* Read the entire manifest file into a string */
-            let mut buf = String::new();
-            let mut fd =
-                std::fs::File::open("manifest").context("Failed to open PDB manifest file")?;
-            fd.read_to_string(&mut buf).expect("Failed to read file");
+            let manifest_path = manifest.unwrap_or(PathBuf::from("manifest"));
+            let buf = tokio::fs::read_to_string(&manifest_path)
+                .await
+                .context("failed to read manifest file")?;
 
             /* Split the file into lines and collect into a vector */
             let mut lines: Vec<String> = buf.lines().map(String::from).collect();
@@ -538,7 +556,7 @@ async fn run() -> anyhow::Result<()> {
 
             println!("Deduped manifest has {} PDBs", lines.len());
 
-            match download_manifest(symsrv, lines).await {
+            match download_manifest(&symsrv, lines).await {
                 Ok(_) => println!("Success!"),
                 Err(e) => println!("Failed: {:?}", e),
             }
@@ -551,11 +569,11 @@ async fn run() -> anyhow::Result<()> {
             use serde_json::json;
 
             let result: Result<(&'static str, PathBuf), anyhow::Error> = async {
-                let servers = connect_servers(symsrv)?;
+                let servers = connect_servers(&symsrv)?;
 
                 // Resolve the PDB for the executable specified.
                 let e = ManifestEntry::from_str(
-                    &get_pdb(filepath).context("failed to resolve PDB hash")?,
+                    &get_pdb(&filepath).context("failed to resolve PDB hash")?,
                 )
                 .unwrap();
                 let info = SymFileInfo::RawHash(e.hash);
@@ -615,8 +633,8 @@ async fn run() -> anyhow::Result<()> {
             targetpath,
         } => {
             /* List all files in the directory specified by args[2] */
-            let dir = Path::new(filepath);
-            let target = Path::new(targetpath);
+            let dir = Path::new(&filepath);
+            let target = Path::new(&targetpath);
             let listing = recursive_listdir(&dir);
 
             listing
@@ -668,6 +686,12 @@ async fn run() -> anyhow::Result<()> {
                 })
                 .await;
         }
+        Command::Info(i) => match i {
+            InfoCommand::Pdbhash { filepath } => {
+                let pdb = get_pdb(&filepath)?;
+                println!("{}", pdb);
+            }
+        },
     }
 
     Ok(())
