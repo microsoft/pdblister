@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "pdblister"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "base64 0.13.1",
