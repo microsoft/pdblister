@@ -10,9 +10,10 @@ infinite loops. Thus this is a stricter (and much faster) alternative.
 The output manifest is compatible with symchk. If you want to use symchk
 in lieu of this tool, use `symchk /im manifest /s <symbol path>`
 
-Note that we currently offer **no guarantee of stability** for this tool.
-If you need stability (e.g. for automation), please pin your install to a specific revision.
+⚠️ Note: This tool is **unstable**! The CLI interface may change at any point, **without warning**.
+If you need programmatic stability (e.g. for automation), please pin your install to a specific revision.
 
+Check out how fast this tool is:
 ![](docs/images/download.gif)
 
 # Quick Start
@@ -32,14 +33,15 @@ If you need stability (e.g. for automation), please pin your install to a specif
 
 # Future
 
-More configuration could be done through command line parameters. Such as
-number of threads for downloads and symbol paths.
-
 Randomizing the order of the files in the manifest would make downloads more
 consistant by not having any filesystem locality bias in the files.
 
 Deduping the files in the manifests could also help, but this isn't a big
 deal *shrug*
+
+We could potentially offer a symchk-compatible subcommand: [#5](https://github.com/microsoft/pdblister/issues/5)
+
+A "server mode" could be implemented so that other tools written in different languages could take advantage of our functionality: [#7](https://github.com/microsoft/pdblister/issues/7)
 
 # Performance
 
@@ -55,21 +57,3 @@ Then for downloads it chomps through a manifest file asynchronously, at up to
 16 files at the same time! The original `symchk` only peaks at about 3-4 Mbps
 of network usage, but this tool saturates my internet connection at
 400 Mbps.
-
-Look how damn fast this stuff is!
-
-```
-On an offline machine:
-
-PS C:\users\pleb\Downloads> .\pdblister.exe manifest C:\
-Generating file listing...
-Done!
-Parsed 398632 of 398632 files (23051 pdbs)
-
-On an online machine:
-C:\dev\pdblister>cargo run --release download
-    Finished release [optimized] target(s) in 0.0 secs
-     Running `target\release\pdblister.exe download`
-Trying to download 23051 PDBs
-```
-
