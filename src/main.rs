@@ -12,6 +12,7 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
+use crashdump::get_module_list_from_crash;
 use indicatif::{MultiProgress, ProgressStyle};
 use symsrv::{SymSrvList, SymSrvSpec};
 
@@ -29,6 +30,7 @@ use tokio::{
 
 use symsrv::{nonblocking::SymSrv, DownloadError, DownloadStatus, SymFileInfo};
 
+mod crashdump;
 mod pe;
 #[allow(dead_code)]
 mod symsrv;
@@ -467,6 +469,16 @@ enum Command {
     /// Various information-related subcommands
     #[command(subcommand)]
     Info(InfoCommand),
+    /// Generate a manifest file for a crashdump, optionally including binaries in the manifest
+    Crashdump {
+        /// The crashdump file to process
+        crashdump_path: PathBuf,
+        /// Manifest file to generate
+        manifest_path: PathBuf,
+        /// Download binaries as well as well as symbols
+        #[arg(short, long)]
+        binaries: bool,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -692,6 +704,25 @@ async fn run() -> anyhow::Result<()> {
                 println!("{}", pdb);
             }
         },
+        Command::Crashdump {
+            crashdump_path,
+            manifest_path,
+            binaries,
+        } => {
+            let manifest_data = get_module_list_from_crash(&crashdump_path, binaries)
+                .context("Failed to generate manifest for crashdump")?;
+
+            let mut output_file = tokio::fs::File::create(manifest_path)
+                .await
+                .context("Failed to create output manifest file")?;
+
+            for manifest_entry in manifest_data {
+                output_file
+                    .write(format!("{}\n", &manifest_entry).as_bytes())
+                    .await
+                    .context("Failed to write to output manifest file")?;
+            }
+        }
     }
 
     Ok(())
