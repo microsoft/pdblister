@@ -159,7 +159,7 @@ pub const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
 
 /// Read a structure from a file stream, directly interpreting the raw bytes
 /// of the file as T.
-pub fn read_struct<T: AsBytes + FromBytes>(fd: &mut (impl Read + Seek)) -> io::Result<T> {
+pub fn read_struct<T: AsBytes + FromBytes>(mut fd: impl Read + Seek) -> io::Result<T> {
     let mut ret: T = T::new_zeroed();
     fd.read_exact(ret.as_bytes_mut())?;
 

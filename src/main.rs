@@ -14,6 +14,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use crashdump::get_module_list_from_crash;
 use indicatif::{MultiProgress, ProgressStyle};
+use kernel_crashdump::get_module_list_from_kernel_crash;
 use symsrv::{SymSrvList, SymSrvSpec};
 
 use std::io::SeekFrom;
@@ -31,6 +32,7 @@ use tokio::{
 use symsrv::{nonblocking::SymSrv, DownloadError, DownloadStatus, SymFileInfo};
 
 mod crashdump;
+mod kernel_crashdump;
 mod pe;
 #[allow(dead_code)]
 mod symsrv;
@@ -494,6 +496,20 @@ enum Command {
         #[arg(short, long)]
         binaries: bool,
     },
+    /// Generate a manifest file for a kernel crashdump, optionally including binaries in the manifest
+    /// Does not support small/kernel-minidumps
+    KernelCrashdump {
+        /// The crashdump file to process
+        crashdump_path: PathBuf,
+        /// Manifest file to generate
+        manifest_path: PathBuf,
+        /// Download binaries as well as well as symbols
+        #[arg(short, long)]
+        binaries: bool,
+        /// Include usermode dlls if present
+        #[arg(short, long)]
+        include_user: bool,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -728,6 +744,27 @@ async fn run() -> anyhow::Result<()> {
 
             let manifest_data = get_module_list_from_crash(&crashdump_path, binaries)
                 .context("Failed to generate manifest for crashdump")?;
+
+            let mut output_file = tokio::fs::File::create(manifest_path)
+                .await
+                .context("Failed to create output manifest file")?;
+
+            for manifest_entry in manifest_data {
+                output_file
+                    .write(format!("{}\n", &manifest_entry).as_bytes())
+                    .await
+                    .context("Failed to write to output manifest file")?;
+            }
+        }
+        Command::KernelCrashdump {
+            crashdump_path,
+            manifest_path,
+            binaries,
+            include_user,
+        } => {
+            let manifest_data =
+                get_module_list_from_kernel_crash(&crashdump_path, binaries, include_user)
+                    .context("Failed to generate manifest for kernel crashdump")?;
 
             let mut output_file = tokio::fs::File::create(manifest_path)
                 .await
