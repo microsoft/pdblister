@@ -103,7 +103,9 @@ fn get_pdb_path<P: AsRef<Path>>(pdbname: P) -> anyhow::Result<PathBuf> {
 }
 
 fn get_file_path(filename: &Path) -> anyhow::Result<String> {
-    let (_, _, pe_header, image_size, _) = pe::parse_pe(filename)?;
+    let fd = std::fs::File::open(filename)?;
+
+    let (_, _, pe_header, image_size, _) = pe::parse_pe(fd)?;
 
     let filename = filename
         .file_name()
@@ -137,7 +139,20 @@ fn get_file_path(filename: &Path) -> anyhow::Result<String> {
 /// Returns a string which is the same representation you get from `symchk`
 /// when outputting a manifest for the PDB "<filename>,<guid><age>,1"
 fn get_pdb(filename: &Path) -> anyhow::Result<String> {
-    let (mut fd, mz_header, pe_header, _, num_tables) = pe::parse_pe(filename)?;
+    let fd = std::fs::File::open(filename)?;
+
+    get_pdb_from_reader(fd)
+}
+
+/// Given a `reader`, attempt to parse out any mention of a PDB file in it.
+///
+/// This returns success if it successfully parses the MZ, PE, finds a debug
+/// header, matches RSDS signature, and contains a valid reference to a PDB.
+///
+/// Returns a string which is the same representation you get from `symchk`
+/// when outputting a manifest for the PDB "<filename>,<guid><age>,1"
+fn get_pdb_from_reader(fd: impl Read + Seek) -> anyhow::Result<String> {
+    let (mut fd, mz_header, pe_header, _, num_tables) = pe::parse_pe(fd)?;
 
     /* Load all the data directories into a vector */
     let mut data_dirs = Vec::new();

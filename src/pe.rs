@@ -1,6 +1,5 @@
 //! Contains functionality for parsing MZ/PE files
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::Path;
 
 use zerocopy::{AsBytes, FromBytes};
 
@@ -160,29 +159,29 @@ pub const IMAGE_DEBUG_TYPE_CODEVIEW: u32 = 2;
 
 /// Read a structure from a file stream, directly interpreting the raw bytes
 /// of the file as T.
-pub fn read_struct<T: AsBytes + FromBytes>(fd: &mut std::fs::File) -> io::Result<T> {
+pub fn read_struct<T: AsBytes + FromBytes>(fd: &mut (impl Read + Seek)) -> io::Result<T> {
     let mut ret: T = T::new_zeroed();
     fd.read_exact(ret.as_bytes_mut())?;
 
     Ok(ret)
 }
 
-pub fn parse_pe(filename: &Path) -> anyhow::Result<(std::fs::File, MZHeader, PEHeader, u32, u32)> {
-    let mut fd = std::fs::File::open(filename)?;
-
+pub fn parse_pe<T: Read + Seek>(
+    mut reader: T,
+) -> anyhow::Result<(T, MZHeader, PEHeader, u32, u32)> {
     /* Check for an MZ header */
-    let mz_header: MZHeader = read_struct(&mut fd)?;
+    let mz_header: MZHeader = read_struct(&mut reader)?;
     if &mz_header.signature != b"MZ" {
         anyhow::bail!("No MZ header present");
     }
 
     /* Seek to where the PE header should be */
-    if fd.seek(SeekFrom::Start(mz_header.new_header as u64))? != mz_header.new_header as u64 {
+    if reader.seek(SeekFrom::Start(mz_header.new_header as u64))? != mz_header.new_header as u64 {
         anyhow::bail!("Failed to seek to PE header");
     }
 
     /* Check for a PE header */
-    let pe_header: PEHeader = read_struct(&mut fd)?;
+    let pe_header: PEHeader = read_struct(&mut reader)?;
     if &pe_header.signature != b"PE\0\0" {
         anyhow::bail!("No PE header present");
     }
@@ -190,15 +189,15 @@ pub fn parse_pe(filename: &Path) -> anyhow::Result<(std::fs::File, MZHeader, PEH
     /* Grab the number of tables from the bitness-specific table */
     let (image_size, num_tables) = match pe_header.machine {
         IMAGE_FILE_MACHINE_I386 => {
-            let opthdr: WindowsPEHeader32 = read_struct(&mut fd)?;
+            let opthdr: WindowsPEHeader32 = read_struct(&mut reader)?;
             (opthdr.size_of_image, opthdr.num_tables)
         }
         IMAGE_FILE_MACHINE_IA64 | IMAGE_FILE_MACHINE_AMD64 => {
-            let opthdr: WindowsPEHeader64 = read_struct(&mut fd)?;
+            let opthdr: WindowsPEHeader64 = read_struct(&mut reader)?;
             (opthdr.size_of_image, opthdr.num_tables)
         }
         _ => anyhow::bail!("Unsupported PE machine type"),
     };
 
-    Ok((fd, mz_header, pe_header, image_size, num_tables))
+    Ok((reader, mz_header, pe_header, image_size, num_tables))
 }
