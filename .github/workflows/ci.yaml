@@ -73,7 +73,7 @@ jobs:
         args: --target=${{ matrix.host_target }} --release
 
     - name: upload artifacts
-      uses: actions/upload-artifact@v2.2.4
+      uses: actions/upload-artifact@v4
       with:
         # Artifact name
         name: ${{ matrix.artifact }}
