@@ -473,8 +473,8 @@ enum Command {
     Crashdump {
         /// The crashdump file to process
         crashdump_path: PathBuf,
-        /// Manifest file to generate
-        manifest_path: PathBuf,
+        /// The manifest path
+        manifest: Option<PathBuf>,
         /// Download binaries as well as well as symbols
         #[arg(short, long)]
         binaries: bool,
@@ -706,9 +706,11 @@ async fn run() -> anyhow::Result<()> {
         },
         Command::Crashdump {
             crashdump_path,
-            manifest_path,
+            manifest,
             binaries,
         } => {
+            let manifest_path = manifest.unwrap_or(PathBuf::from("manifest"));
+
             let manifest_data = get_module_list_from_crash(&crashdump_path, binaries)
                 .context("Failed to generate manifest for crashdump")?;
 
