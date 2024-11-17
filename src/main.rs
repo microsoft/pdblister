@@ -501,8 +501,8 @@ enum Command {
     KernelCrashdump {
         /// The crashdump file to process
         crashdump_path: PathBuf,
-        /// Manifest file to generate
-        manifest_path: PathBuf,
+        /// The manifest path
+        manifest: Option<PathBuf>,
         /// Download binaries as well as well as symbols
         #[arg(short, long)]
         binaries: bool,
@@ -758,10 +758,12 @@ async fn run() -> anyhow::Result<()> {
         }
         Command::KernelCrashdump {
             crashdump_path,
-            manifest_path,
+            manifest,
             binaries,
             include_user,
         } => {
+            let manifest_path = manifest.unwrap_or(PathBuf::from("manifest"));
+
             let manifest_data =
                 get_module_list_from_kernel_crash(&crashdump_path, binaries, include_user)
                     .context("Failed to generate manifest for kernel crashdump")?;
