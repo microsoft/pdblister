@@ -1,0 +1,76 @@
+# Based on example from: https://github.com/taiki-e/upload-rust-binary-action
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - v(\d+)\.(\d+)\.(\d+)
+
+env:
+  CARGO_INCREMENTAL: 0
+  # CARGO_NET_GIT_FETCH_WITH_CLI: true
+  CARGO_NET_RETRY: 10
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # RUSTFLAGS: -D warnings
+  RUSTUP_MAX_RETRIES: 10
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -CeEuxo pipefail {0}
+
+jobs:
+  create-release:
+    if: github.repository_owner == 'microsoft'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          # (required) GitHub token for creating GitHub Releases.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
+    name: ${{ matrix.target }}
+    if: github.repository_owner == 'microsoft'
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - run: printf '%s\n' "RUSTFLAGS=${RUSTFLAGS} -C target-feature=+crt-static" >>"${GITHUB_ENV}"
+        if: contains(matrix.target, '-windows-msvc')
+      - run: printf '%s\n' "RUSTFLAGS=${RUSTFLAGS} -C target-feature=+crt-static -C link-self-contained=yes" >>"${GITHUB_ENV}"
+        if: contains(matrix.target, '-linux-musl')
+      # https://doc.rust-lang.org/rustc/platform-support.html
+      - run: printf 'MACOSX_DEPLOYMENT_TARGET=10.12\n' >>"${GITHUB_ENV}"
+        if: matrix.target == 'x86_64-apple-darwin'
+      - run: printf 'MACOSX_DEPLOYMENT_TARGET=11.0\n' >>"${GITHUB_ENV}"
+        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'universal-apple-darwin'
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: pdblister
+          target: ${{ matrix.target }}
+          tar: all
+          zip: windows
+          token: ${{ secrets.GITHUB_TOKEN }}
