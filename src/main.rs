@@ -12,7 +12,9 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
+use crashdump::get_module_list_from_crash;
 use indicatif::{MultiProgress, ProgressStyle};
+use kernel_crashdump::get_module_list_from_kernel_crash;
 use symsrv::{SymSrvList, SymSrvSpec};
 
 use std::io::SeekFrom;
@@ -29,6 +31,8 @@ use tokio::{
 
 use symsrv::{nonblocking::SymSrv, DownloadError, DownloadStatus, SymFileInfo};
 
+mod crashdump;
+mod kernel_crashdump;
 mod pe;
 #[allow(dead_code)]
 mod symsrv;
@@ -101,7 +105,9 @@ fn get_pdb_path<P: AsRef<Path>>(pdbname: P) -> anyhow::Result<PathBuf> {
 }
 
 fn get_file_path(filename: &Path) -> anyhow::Result<String> {
-    let (_, _, pe_header, image_size, _) = pe::parse_pe(filename)?;
+    let fd = std::fs::File::open(filename)?;
+
+    let (_, _, pe_header, image_size, _) = pe::parse_pe(fd)?;
 
     let filename = filename
         .file_name()
@@ -135,7 +141,20 @@ fn get_file_path(filename: &Path) -> anyhow::Result<String> {
 /// Returns a string which is the same representation you get from `symchk`
 /// when outputting a manifest for the PDB "<filename>,<guid><age>,1"
 fn get_pdb(filename: &Path) -> anyhow::Result<String> {
-    let (mut fd, mz_header, pe_header, _, num_tables) = pe::parse_pe(filename)?;
+    let fd = std::fs::File::open(filename)?;
+
+    get_pdb_from_reader(fd)
+}
+
+/// Given a `reader`, attempt to parse out any mention of a PDB file in it.
+///
+/// This returns success if it successfully parses the MZ, PE, finds a debug
+/// header, matches RSDS signature, and contains a valid reference to a PDB.
+///
+/// Returns a string which is the same representation you get from `symchk`
+/// when outputting a manifest for the PDB "<filename>,<guid><age>,1"
+fn get_pdb_from_reader(fd: impl Read + Seek) -> anyhow::Result<String> {
+    let (mut fd, mz_header, pe_header, _, num_tables) = pe::parse_pe(fd)?;
 
     /* Load all the data directories into a vector */
     let mut data_dirs = Vec::new();
@@ -467,6 +486,30 @@ enum Command {
     /// Various information-related subcommands
     #[command(subcommand)]
     Info(InfoCommand),
+    /// Generate a manifest file for a crashdump, optionally including binaries in the manifest
+    Crashdump {
+        /// The crashdump file to process
+        crashdump_path: PathBuf,
+        /// The manifest path
+        manifest: Option<PathBuf>,
+        /// Download binaries as well as well as symbols
+        #[arg(short, long)]
+        binaries: bool,
+    },
+    /// Generate a manifest file for a kernel crashdump, optionally including binaries in the manifest
+    /// Does not support small/kernel-minidumps
+    KernelCrashdump {
+        /// The crashdump file to process
+        crashdump_path: PathBuf,
+        /// The manifest path
+        manifest: Option<PathBuf>,
+        /// Download binaries as well as well as symbols
+        #[arg(short, long)]
+        binaries: bool,
+        /// Include usermode dlls if present
+        #[arg(short, long)]
+        include_user: bool,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -692,6 +735,50 @@ async fn run() -> anyhow::Result<()> {
                 println!("{}", pdb);
             }
         },
+        Command::Crashdump {
+            crashdump_path,
+            manifest,
+            binaries,
+        } => {
+            let manifest_path = manifest.unwrap_or(PathBuf::from("manifest"));
+
+            let manifest_data = get_module_list_from_crash(&crashdump_path, binaries)
+                .context("Failed to generate manifest for crashdump")?;
+
+            let mut output_file = tokio::fs::File::create(manifest_path)
+                .await
+                .context("Failed to create output manifest file")?;
+
+            for manifest_entry in manifest_data {
+                output_file
+                    .write(format!("{}\n", &manifest_entry).as_bytes())
+                    .await
+                    .context("Failed to write to output manifest file")?;
+            }
+        }
+        Command::KernelCrashdump {
+            crashdump_path,
+            manifest,
+            binaries,
+            include_user,
+        } => {
+            let manifest_path = manifest.unwrap_or(PathBuf::from("manifest"));
+
+            let manifest_data =
+                get_module_list_from_kernel_crash(&crashdump_path, binaries, include_user)
+                    .context("Failed to generate manifest for kernel crashdump")?;
+
+            let mut output_file = tokio::fs::File::create(manifest_path)
+                .await
+                .context("Failed to create output manifest file")?;
+
+            for manifest_entry in manifest_data {
+                output_file
+                    .write(format!("{}\n", &manifest_entry).as_bytes())
+                    .await
+                    .context("Failed to write to output manifest file")?;
+            }
+        }
     }
 
     Ok(())
