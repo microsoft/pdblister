@@ -4,9 +4,12 @@ description = "Faster version of `symchk /om` for generating PDB manifests of of
 license-file = "LICENSE"
 homepage = "https://github.com/microsoft/pdblister"
 repository = "https://github.com/microsoft/pdblister"
-version = "0.0.3"
+version = "0.0.0"
 authors = ["Gogs <gogs@fake.local>", "Justin Moore <jusmoore@microsoft.com>"]
 edition = "2018"
+# N.B: We used to publish to crates.io, but since this is a binary crate that doesn't make much sense
+# so we've opted to publish binary releases instead.
+publish = false
 
 [dependencies]
 anyhow = "1.0"
