@@ -17,7 +17,9 @@ base64 = "0.13"
 clap = { version = "4.4.11", features = ["derive"] }
 futures = "0.3"
 indicatif = { version = "0.17.2", features = ["tokio"] }
+kdmp-parser = "0.5.0"
 mime = "0.3"
+minidump = "0.22.2"
 pdb = "0.8.0"
 rand = "0.8"
 reqwest = "0.11.13"
