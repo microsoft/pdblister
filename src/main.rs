@@ -428,6 +428,7 @@ enum Command {
         /// The PE file path
         filepath: PathBuf,
         /// The format to print the message in
+        #[clap(long)]
         message_format: MessageFormat,
     },
     /// Recursively searches a directory tree and caches all PEs in the current directory in a symbol cache layout
